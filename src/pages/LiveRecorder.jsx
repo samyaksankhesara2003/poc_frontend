@@ -86,13 +86,14 @@
 //         </div>
 //     );
 // }
+//-------------------------------------------------------------------------- working with open socket
 import { useEffect, useRef, useState } from "react";
 
 export default function LiveRecorder() {
     const socketRef = useRef(null);
     const mediaRecorderRef = useRef(null);
 
-    const [isRecording, setIsRecording] = useState(false);
+    const [isRecording, setIsRecording] = useState(false);  
     const [segments, setSegments] = useState([]);
     // segments = [{ speaker: 0, text: "hello" }, ...]
 
@@ -109,12 +110,11 @@ export default function LiveRecorder() {
             const data = JSON.parse(event.data);
 
             if (data.type === "transcript" && data.speakers) {
-                // setSegments(data.speakers);
                 setSegments((prev) => [...prev, ...data.speakers]);
             }
             // if (data.type === "final_transcript" && data.speakers) {
             //     setSegments((prev) => [...prev, ...data.speakers]);
-            // }
+            //   }
         };
 
         socketRef.current.onerror = (err) => {
@@ -190,3 +190,92 @@ export default function LiveRecorder() {
         </div>
     );
 }
+//-------------------------------------------------------------------------- working with open socket
+
+
+//--working with closed socket
+// import { useRef, useState } from "react";
+
+// export default function LiveRecorder() {
+//   const socketRef = useRef(null);
+//   const mediaRecorderRef = useRef(null);
+
+//   const [isRecording, setIsRecording] = useState(false);
+//   const [segments, setSegments] = useState([]);
+
+//   const startRecording = async () => {
+//     // 1️⃣ Open WebSocket
+//     socketRef.current = new WebSocket("ws://localhost:3000");
+
+//     socketRef.current.onopen = async () => {
+//       console.log("✅ WebSocket connected");
+
+//       // 2️⃣ Start microphone ONLY after WS is ready
+//       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+//       const mediaRecorder = new MediaRecorder(stream, {
+//         mimeType: "audio/webm;codecs=opus",
+//       });
+
+//       mediaRecorderRef.current = mediaRecorder;
+
+//       mediaRecorder.ondataavailable = (event) => {
+//         if (
+//           event.data.size > 0 &&
+//           socketRef.current?.readyState === WebSocket.OPEN
+//         ) {
+//           event.data.arrayBuffer().then((buffer) => {
+//             socketRef.current.send(buffer);
+//           });
+//         }
+//       };
+
+//       mediaRecorder.start(250);
+//       setIsRecording(true);
+//     };
+
+//     socketRef.current.onmessage = (event) => {
+//       const data = JSON.parse(event.data);
+
+//       if (data.type === "final_transcript" && data.speakers) {
+//         setSegments((prev) => [...prev, ...data.speakers]);
+//       }
+//     };
+
+//     socketRef.current.onerror = console.error;
+//   };
+
+//   const stopRecording = () => {
+//     // 3️⃣ Stop mic
+//     mediaRecorderRef.current?.stop();
+
+//     // 4️⃣ Close WebSocket
+//     socketRef.current?.close();
+
+//     mediaRecorderRef.current = null;
+//     socketRef.current = null;
+
+//     setIsRecording(false);
+//   };
+
+//   return (
+//     <div style={{ padding: 20 }}>
+//       <h2>🎙️ Live Conversation</h2>
+
+//       {!isRecording ? (
+//         <button onClick={startRecording}>Start Speaking</button>
+//       ) : (
+//         <button onClick={stopRecording}>Stop</button>
+//       )}
+
+//       <div style={{ marginTop: 20 }}>
+//         {segments.map((seg, i) => (
+//           <p key={i}>
+//             <strong>Speaker {seg.speaker}:</strong> {seg.text}
+//           </p>
+//         ))}
+//       </div>
+//     </div>
+//   );
+// }
+//-------------------------------------------------------------------------- working with closed socket
