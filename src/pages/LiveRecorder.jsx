@@ -128,10 +128,19 @@ export default function LiveRecorder() {
     }, []);
 
     const startRecording = async () => {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
+        // const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                channelCount: 1, // Mono audio works better for diarization
+                sampleRate: 16000, // Standard for speech recognition
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+            }
+        });
         const mediaRecorder = new MediaRecorder(stream, {
             mimeType: "audio/webm;codecs=opus",
+            audioBitsPerSecond: 16000, // Good quality for speech
         });
 
         mediaRecorderRef.current = mediaRecorder;
@@ -148,6 +157,7 @@ export default function LiveRecorder() {
         };
 
         mediaRecorder.start(250); // send audio every 250ms
+        // mediaRecorder.start(1000);
         setIsRecording(true);
     };
 
