@@ -1,15 +1,17 @@
-import axios from "axios";
 import { useRef, useState } from "react";
 
 export default function DeepDynamicRecorder() {
     const socketRef = useRef(null);
-    const mediaRecorderRef = useRef(null);
+    const audioContextRef = useRef(null);
+    const processorRef = useRef(null);
     const streamRef = useRef(null);
 
     const [sessionState, setSessionState] = useState("idle");
     const [segments, setSegments] = useState([]);
+    console.log(segments,"segments");
+    
     const [interimText, setInterimText] = useState("");
-
+    
     // ─────────────────────────────
     // 🔌 Open WebSocket + Start Session
     // ─────────────────────────────
@@ -44,12 +46,13 @@ export default function DeepDynamicRecorder() {
     };
 
     // ─────────────────────────────
-    // 🎤 Start Microphone
+    // 🎤 Start Microphone (RAW PCM)
     // ─────────────────────────────
     const startMicrophone = async () => {
         const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 channelCount: 1,
+                sampleRate: 16000,  // ✅ Match Deepgram config
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
@@ -58,31 +61,70 @@ export default function DeepDynamicRecorder() {
 
         streamRef.current = stream;
 
-        const recorder = new MediaRecorder(stream, {
-            mimeType: "audio/webm;codecs=opus",
-        });
+        // ✅ Create AudioContext for PCM extraction
+        audioContextRef.current = new AudioContext({ sampleRate: 16000 });
+        const source = audioContextRef.current.createMediaStreamSource(stream);
 
-        mediaRecorderRef.current = recorder;
+        // ✅ Create AudioWorklet processor inline
+        const processorCode = `
+            class PCMProcessor extends AudioWorkletProcessor {
+                process(inputs) {
+                    const input = inputs[0];
+                    if (input.length > 0) {
+                        const samples = input[0];
+                        const pcm = new Int16Array(samples.length);
+                        
+                        // Convert float32 [-1, 1] to int16 [-32768, 32767]
+                        for (let i = 0; i < samples.length; i++) {
+                            const s = Math.max(-1, Math.min(1, samples[i]));
+                            pcm[i] = s < 0 ? s * 32768 : s * 32767;
+                        }
+                        
+                        this.port.postMessage(pcm.buffer);
+                    }
+                    return true;
+                }
+            }
+            registerProcessor('pcm-processor', PCMProcessor);
+        `;
 
-        recorder.ondataavailable = (event) => {
-            if (
-                event.data.size > 0 &&
-                socketRef.current?.readyState === WebSocket.OPEN
-            ) {
-                event.data.arrayBuffer().then((buffer) => {
-                    socketRef.current.send(buffer);
-                });
+        const blob = new Blob([processorCode], { type: 'application/javascript' });
+        const url = URL.createObjectURL(blob);
+
+        await audioContextRef.current.audioWorklet.addModule(url);
+        URL.revokeObjectURL(url);
+
+        processorRef.current = new AudioWorkletNode(
+            audioContextRef.current,
+            'pcm-processor'
+        );
+
+        // ✅ Send PCM data to WebSocket
+        processorRef.current.port.onmessage = (event) => {
+            if (socketRef.current?.readyState === WebSocket.OPEN) {
+                socketRef.current.send(event.data);
             }
         };
 
-        recorder.start(1000); // 1s chunks (best for diarization)
+        source.connect(processorRef.current);
+        processorRef.current.connect(audioContextRef.current.destination);
     };
 
     // ─────────────────────────────
     // ⏸ Pause Session
     // ─────────────────────────────
     const pauseSession = () => {
-        mediaRecorderRef.current?.stop();
+        // Stop audio processing
+        if (processorRef.current) {
+            processorRef.current.disconnect();
+            processorRef.current = null;
+        }
+
+        if (audioContextRef.current) {
+            audioContextRef.current.close();
+            audioContextRef.current = null;
+        }
+
         socketRef.current?.send(JSON.stringify({ type: "PAUSE" }));
         setSessionState("paused");
     };
@@ -100,23 +142,35 @@ export default function DeepDynamicRecorder() {
     // ⏹ Stop Session
     // ─────────────────────────────
     const stopSession = async () => {
-        mediaRecorderRef.current?.stop();
-        streamRef.current?.getTracks().forEach((t) => t.stop());
+        // Cleanup audio
+        if (processorRef.current) {
+            processorRef.current.disconnect();
+            processorRef.current = null;
+        }
 
+        if (audioContextRef.current) {
+            audioContextRef.current.close();
+            audioContextRef.current = null;
+        }
+
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+
+        // Close WebSocket
         socketRef.current?.send(JSON.stringify({ type: "STOP" }));
         socketRef.current?.close();
+        socketRef.current = null;
 
         const finalText = segments
             .map((s) => `Speaker ${s.speaker}: ${s.text}`)
             .join("\n");
 
+        console.log("Final transcript:", finalText);
+
+        // Optional: Send to backend
         // await axios.post("http://localhost:3000/poc/analysis", {
         //     text: finalText,
         // });
-
-        mediaRecorderRef.current = null;
-        streamRef.current = null;
-        socketRef.current = null;
 
         setSessionState("idle");
         setInterimText("");
@@ -127,7 +181,7 @@ export default function DeepDynamicRecorder() {
     // ─────────────────────────────
     return (
         <div style={{ padding: 20 }}>
-            <h2>🎙️ Live Conversation (Deepgram)</h2>
+            <h2>🎙️ Live Conversation (Deepgram Diarization)</h2>
 
             {sessionState === "idle" && (
                 <button onClick={startSession} style={btn("green")}>
@@ -160,15 +214,25 @@ export default function DeepDynamicRecorder() {
             <div style={box}>
                 <strong>Transcript:</strong>
 
+                {segments.length === 0 && !interimText && (
+                    <p style={{ color: "#888", fontStyle: "italic" }}>
+                        Click Start and begin speaking...
+                    </p>
+                )}
+
                 {segments.map((seg, i) => (
-                    <p key={i}>
-                        <strong>Speaker {seg.speaker}:</strong> {seg.text}
+                    <p key={i} style={{ margin: "10px 0" }}>
+                        <strong style={{
+                            color: seg.speaker === 0 ? "#2196F3" : "#FF9800"
+                        }}>
+                            Speaker {seg.speaker}:
+                        </strong> {seg.text}
                     </p>
                 ))}
 
                 {interimText && (
-                    <p style={{ color: "#999" }}>
-                        <em>{interimText}</em>
+                    <p style={{ color: "#999", fontStyle: "italic" }}>
+                        <em>... {interimText}</em>
                     </p>
                 )}
             </div>
@@ -195,4 +259,5 @@ const box = {
     border: "1px solid #ccc",
     borderRadius: 6,
     minHeight: 150,
+    backgroundColor: "#f9f9f9",
 };
