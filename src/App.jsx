@@ -5,7 +5,7 @@ import HomePage from './pages/HomePage'
 import LiveRecorder from './pages/LiveRecorder'
 import DeepRecorder from './pages/DeepRecord'
 import DeepDynamicRecorder from './pages/DynamicSocket'
-
+import ReDiarizе from './pages/ReDiariz'
 function App() {
   return (
     <>
@@ -16,6 +16,8 @@ function App() {
           <Route path='/deep' element={<LiveRecorder />}></Route>
           <Route path='/opt' element={<DeepRecorder />} />
           <Route path='/dynamic' element={<DeepDynamicRecorder />}></Route>
+          <Route path='/redynamic' element={<ReDiarizе />}></Route>
+
         </Routes>
       </BrowserRouter>
     </>
