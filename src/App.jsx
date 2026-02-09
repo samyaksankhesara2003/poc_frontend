@@ -6,6 +6,10 @@ import LiveRecorder from './pages/LiveRecorder'
 import DeepRecorder from './pages/DeepRecord'
 import DeepDynamicRecorder from './pages/DynamicSocket'
 import ReDiarizе from './pages/ReDiariz'
+import SpeechMatrix from './pages/SpeechMatrix'
+import PythonePoc from './pages/PythonePoc'
+import PreRecordedPythonePoc from './pages/PreRecordedPythone'
+import SpeechToTextModify from './pages/ModifySpeechMatrice'
 function App() {
   return (
     <>
@@ -13,11 +17,19 @@ function App() {
         <Routes>
           <Route path='/' element={<HomePage />} />
           {/* <Route path='/realtime' element={<RealtimePage />} /> */}
-          <Route path='/deep' element={<LiveRecorder />}></Route>
-          <Route path='/opt' element={<DeepRecorder />} />
+          {/* <Route path='/deep' element={<LiveRecorder />}></Route> */}
+          {/* <Route path='/opt' element={<DeepRecorder />} /> */}
+
+
           <Route path='/dynamic' element={<DeepDynamicRecorder />}></Route>
           <Route path='/redynamic' element={<ReDiarizе />}></Route>
+          <Route path='/pythonpoc' element={<PythonePoc />} />
+          <Route path='/prepythone' element={<PreRecordedPythonePoc />} />
 
+
+          {/* //----------- */}
+          <Route path='/speechmatrix' element={<SpeechMatrix />} />
+          <Route path='/speechmatrixmodify' element={<SpeechToTextModify />} />
         </Routes>
       </BrowserRouter>
     </>
