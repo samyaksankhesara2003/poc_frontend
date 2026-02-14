@@ -11,6 +11,7 @@ import PythonePoc from './pages/PythonePoc'
 import PreRecordedPythonePoc from './pages/PreRecordedPythone'
 import SpeechToTextModify from './pages/ModifySpeechMatrice'
 import SpeechToTextMultiSession from './pages/SessionUi'
+import DirectUiToSpeechSpeech from './pages/DirectUiToSpeechSpeech'
 function App() {
   return (
     <>
@@ -32,6 +33,7 @@ function App() {
           <Route path='/speechmatrix' element={<SpeechMatrix />} />
           <Route path='/speechmatrixmodify' element={<SpeechToTextModify />} />
           <Route path='/sessionSpeechMatrice' element={<SpeechToTextMultiSession/>}/>
+          <Route path='/direct-speech' element={<DirectUiToSpeechSpeech/>}/>
         </Routes>
       </BrowserRouter>
     </>
