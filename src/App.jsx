@@ -12,6 +12,8 @@ import PreRecordedPythonePoc from './pages/PreRecordedPythone'
 import SpeechToTextModify from './pages/ModifySpeechMatrice'
 import SpeechToTextMultiSession from './pages/SessionUi'
 import DirectUiToSpeechSpeech from './pages/DirectUiToSpeechSpeech'
+import SessionDirect from './pages/SessionDirect'
+import SessionWithBackend from './pages/SessionWithBackend'
 function App() {
   return (
     <>
@@ -21,19 +23,25 @@ function App() {
           {/* <Route path='/realtime' element={<RealtimePage />} /> */}
           {/* <Route path='/deep' element={<LiveRecorder />}></Route> */}
           {/* <Route path='/opt' element={<DeepRecorder />} /> */}
+          {/* <Route path='/pythonpoc' element={<PythonePoc />} />
+          <Route path='/prepythone' element={<PreRecordedPythonePoc />} /> */}
+          {/* <Route path='/sessionSpeechMatrice' element={<SpeechToTextMultiSession/>}/> */}
 
 
           <Route path='/dynamic' element={<DeepDynamicRecorder />}></Route>
           <Route path='/redynamic' element={<ReDiarizе />}></Route>
-          <Route path='/pythonpoc' element={<PythonePoc />} />
-          <Route path='/prepythone' element={<PreRecordedPythonePoc />} />
-
-
           {/* //----------- */}
+
+          {/* with backend speechmatics */}
           <Route path='/speechmatrix' element={<SpeechMatrix />} />
           <Route path='/speechmatrixmodify' element={<SpeechToTextModify />} />
-          <Route path='/sessionSpeechMatrice' element={<SpeechToTextMultiSession/>}/>
+
+          {/* without backend - direct Speechmatics from browser */}
           <Route path='/direct-speech' element={<DirectUiToSpeechSpeech/>}/>
+          <Route path='/session-direct' element={<SessionDirect/>}/>
+
+          {/* session with backend: WebSocket → backend → Speechmatics */}
+          <Route path='/session-backend' element={<SessionWithBackend/>}/>
         </Routes>
       </BrowserRouter>
     </>
