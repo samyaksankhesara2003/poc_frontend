@@ -470,10 +470,15 @@ export default function SessionWithBackend() {
                   const sentences = splitSentences(t.text);
                   const speakerNum = t.speaker === "S1" ? "1" : "2";
                   const isSpeaker1 = t.speaker === "S1";
+                  // const speakerNum = t.speaker?.replace("S", "") || "?";
+                  // const isPrimarySpeaker = t.speaker === "S1";
+
                   if (sentences.length === 0) {
                     return (
                       <div key={`${i}-0`} style={transcriptLine}>
                         <span style={speakerPill(isSpeaker1)}>Speaker {speakerNum}</span>
+                        {/* <span style={speakerPill(isPrimarySpeaker)}>Speaker {speakerNum}</span> */}
+
                         <span style={transcriptLineText}>{t.text || "\u00a0"}</span>
                       </div>
                     );
@@ -481,6 +486,8 @@ export default function SessionWithBackend() {
                   return sentences.map((sent, j) => (
                     <div key={`${i}-${j}`} style={transcriptLine}>
                       <span style={speakerPill(isSpeaker1)}>Speaker {speakerNum}</span>
+                      {/* <span style={speakerPill(isPrimarySpeaker)}>Speaker {speakerNum}</span> */}
+
                       <span style={transcriptLineText}>{sent}</span>
                     </div>
                   ));
