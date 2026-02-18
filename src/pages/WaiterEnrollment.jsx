@@ -37,7 +37,6 @@ export default function WaiterEnrollment() {
       }
 
       setResult({
-        transcript: data.transcript,
         waiterId: data.waiterId,
         filename: data.filename,
       });
@@ -112,8 +111,7 @@ export default function WaiterEnrollment() {
       <h2>Waiter voice enrollment (POC 2 – Steps 1–4)</h2>
       <p style={{ fontSize: 14, color: "#666", marginBottom: 8 }}>
         Record the waiter&apos;s voice for 15–20 seconds. When you click Stop, the recording is
-        sent to the backend, transcribed (Whisper), converted to a vector (OpenAI), and stored in
-        Pinecone.
+        sent to the backend, a voice-print embedding is extracted, and stored in Pinecone.
       </p>
       <p style={{ fontSize: 13, color: "#888", marginBottom: 20 }}>
         Record in a quiet place. Speak clearly for best results.
@@ -151,22 +149,16 @@ export default function WaiterEnrollment() {
           Recording: {formatDuration(recordDuration)} — aim for 15–20 seconds
         </div>
       )}
-      {status === "sending" && <div style={statusStyle}>Sending to backend and storing in Pinecone…</div>}
+      {status === "sending" && <div style={statusStyle}>Extracting voice embedding and storing in Pinecone…</div>}
       {status === "success" && result && (
         <div style={successBox}>
-          <strong>Voice stored in Pinecone</strong>
+          <strong>Voice print stored in Pinecone</strong>
           <div style={{ marginTop: 8 }}>
             <strong>Waiter ID:</strong> {result.waiterId}
           </div>
           {result.filename && (
             <div style={{ marginTop: 4, fontSize: 13, color: "#666" }}>
-            Audio file: {result.filename}
-            </div>
-          )}
-          {result.transcript && (
-            <div style={{ marginTop: 12 }}>
-              <strong>Transcript (Whisper):</strong>
-              <div style={transcriptPreview}>{result.transcript}</div>
+              Audio file: {result.filename}
             </div>
           )}
         </div>
@@ -178,7 +170,7 @@ export default function WaiterEnrollment() {
           <li>Waiter starts enrollment (this page)</li>
           <li>Record voice 15–20 s → Stop</li>
           <li>Backend saves audio to <code>audio/</code> folder</li>
-          <li>Backend: Whisper → transcript → OpenAI embedding → Pinecone</li>
+          <li>Backend: audio → speaker voice embedding → Pinecone</li>
         </ol>
       </div>
     </div>
@@ -228,16 +220,6 @@ const successBox = {
   borderRadius: 8,
   marginBottom: 20,
   border: "1px solid #81c784",
-};
-const transcriptPreview = {
-  marginTop: 6,
-  padding: 10,
-  background: "#fff",
-  borderRadius: 4,
-  fontSize: 14,
-  lineHeight: 1.5,
-  maxHeight: 120,
-  overflowY: "auto",
 };
 const stepsBox = {
   marginTop: 24,
