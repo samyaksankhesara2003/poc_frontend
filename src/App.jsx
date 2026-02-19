@@ -6,6 +6,7 @@ import SessionDirect from './pages/SessionDirect'
 import SessionWithBackend from './pages/SessionWithBackend'
 import WaiterEnrollment from './pages/WaiterEnrollment'
 import WaiterConversation from './pages/WaiterConversation'
+import EnrollSpeechmatics from './pages/EnrollSpeechmatics'
 function App() {
   return (
     <>
@@ -37,6 +38,7 @@ function App() {
           <Route path='/session-backend' element={<SessionWithBackend />} />
           <Route path='/waiter-enrollment' element={<WaiterEnrollment />} />
           <Route path='/waiter-conversation' element={<WaiterConversation />} />
+          <Route path='/enroll-speechmatics' element={<EnrollSpeechmatics />} />
         </Routes>
       </BrowserRouter>
     </>
