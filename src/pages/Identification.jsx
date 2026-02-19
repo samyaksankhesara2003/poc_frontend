@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { PCMRecorder } from "@speechmatics/browser-audio-input";
 
 import workletUrl from "@speechmatics/browser-audio-input/pcm-audio-worklet.min.js?url";
+import AudioFileRecorder from "./AudioFileRecorder";
 const WORKLET_URL = workletUrl;
 
 const RECORDING_SAMPLE_RATE = 16000;
@@ -9,9 +10,15 @@ const RECORDING_SAMPLE_RATE = 16000;
 /** Delay before starting mic so backend can connect to Speechmatics first (helps diarization) */
 const MIC_START_DELAY_MS = 1800;
 
-const WS_URL = import.meta.env.VITE_WS_SESSION_URL || "ws://localhost:3000/session-backend";
+const WS_URL =
+  import.meta.env.VITE_WS_SESSION_URL || "ws://localhost:3000/session-backend";
 
-const STATUS = { DRAFT: "draft", ACTIVE: "active", PAUSED: "paused", CLOSED: "closed" };
+const STATUS = {
+  DRAFT: "draft",
+  ACTIVE: "active",
+  PAUSED: "paused",
+  CLOSED: "closed",
+};
 
 function newSession(name) {
   return {
@@ -60,7 +67,7 @@ function convertFloatTo16BitPCM(input) {
   return buffer;
 }
 
-export default function SessionWithBackend() {
+export default function Identification() {
   const wsRef = useRef(null);
   const recorderRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -70,60 +77,78 @@ export default function SessionWithBackend() {
   const [isRecording, setIsRecording] = useState(false);
   const [connectingAudio, setConnectingAudio] = useState(false);
   const [error, setError] = useState(null);
-  const activeSessionId = sessions.find((s) => s.status === STATUS.ACTIVE)?.id ?? null;
-  const selectedSession = selectedSessionId ? sessions.find((s) => s.id === selectedSessionId) : null;
+  const [isPriming, setIsPriming] = useState(false);
+  const activeSessionId =
+    sessions.find((s) => s.status === STATUS.ACTIVE)?.id ?? null;
+  const selectedSession = selectedSessionId
+    ? sessions.find((s) => s.id === selectedSessionId)
+    : null;
   const canStartAnother = !activeSessionId;
-  const canStartRecording = activeSessionId && selectedSessionId === activeSessionId && !isRecording;
+  const canStartRecording =
+    activeSessionId && selectedSessionId === activeSessionId && !isRecording;
   const canStopRecording = isRecording;
   const canPause = activeSessionId && selectedSessionId === activeSessionId;
-  const canClose = selectedSession && (selectedSession.status === STATUS.ACTIVE || selectedSession.status === STATUS.PAUSED);
+  const canClose =
+    selectedSession &&
+    (selectedSession.status === STATUS.ACTIVE ||
+      selectedSession.status === STATUS.PAUSED);
 
-  const handleReceiveMessage = useCallback((sessionId) => (data) => {
-    if (data.message !== "AddTranscript") return;
+  const handleReceiveMessage = useCallback(
+    (sessionId) => (data) => {
+      if (data.message !== "AddTranscript") return;
 
-    const results = data.results;
-    if (!results?.length) return;
+      const results = data.results;
+      if (!results?.length) return;
 
-    const segments = [];
-    for (const r of results) {
+      const segments = [];
+      for (const r of results) {
+        const content = r.alternatives?.[0]?.content;
 
-      const content = r.alternatives?.[0]?.content;
+        const speaker = r.alternatives?.[0]?.speaker || "S1";
+        if (content == null) continue;
 
-      const speaker = r.alternatives?.[0]?.speaker || "S1";
-      if (content == null) continue;
-
-      if (segments.length > 0 && segments[segments.length - 1].speaker === speaker) {
-        const last = segments[segments.length - 1];
-        last.text += isPunctuationOnly(content) ? content : (last.text ? " " : "") + content;
-      } else {
-        segments.push({ speaker, text: content });
-      }
-    }
-    if (segments.length === 0) return;
-
-    setSessions((prev) => {
-      const session = prev.find((s) => s.id === sessionId);
-      if (!session) return prev;
-
-      let transcript = [...session.transcript];
-      for (const seg of segments) {
-        const last = transcript[transcript.length - 1];
-        if (last && last.speaker === seg.speaker) {
-          const cleanPart = removeOverlap(last.text, seg.text);
-          if (cleanPart) {
-            transcript[transcript.length - 1] = {
-              ...last,
-              text: last.text + (isPunctuationOnly(cleanPart) ? "" : " ") + cleanPart,
-            };
-          }
+        if (
+          segments.length > 0 &&
+          segments[segments.length - 1].speaker === speaker
+        ) {
+          const last = segments[segments.length - 1];
+          last.text += isPunctuationOnly(content)
+            ? content
+            : (last.text ? " " : "") + content;
         } else {
-          transcript.push({ speaker: seg.speaker, text: seg.text });
+          segments.push({ speaker, text: content });
         }
       }
+      if (segments.length === 0) return;
 
-      return prev.map((s) => (s.id === sessionId ? { ...s, transcript } : s));
-    });
-  }, []);
+      setSessions((prev) => {
+        const session = prev.find((s) => s.id === sessionId);
+        if (!session) return prev;
+
+        let transcript = [...session.transcript];
+        for (const seg of segments) {
+          const last = transcript[transcript.length - 1];
+          if (last && last.speaker === seg.speaker) {
+            const cleanPart = removeOverlap(last.text, seg.text);
+            if (cleanPart) {
+              transcript[transcript.length - 1] = {
+                ...last,
+                text:
+                  last.text +
+                  (isPunctuationOnly(cleanPart) ? "" : " ") +
+                  cleanPart,
+              };
+            }
+          } else {
+            transcript.push({ speaker: seg.speaker, text: seg.text });
+          }
+        }
+
+        return prev.map((s) => (s.id === sessionId ? { ...s, transcript } : s));
+      });
+    },
+    [],
+  );
 
   const startRecording = useCallback(async () => {
     if (!activeSessionId || isRecording) return;
@@ -143,7 +168,9 @@ export default function SessionWithBackend() {
 
           if (wsRef.current?.readyState !== WebSocket.OPEN) return;
 
-          const audioContext = new AudioContext({ sampleRate: RECORDING_SAMPLE_RATE });
+          const audioContext = new AudioContext({
+            sampleRate: RECORDING_SAMPLE_RATE,
+          });
           audioContextRef.current = audioContext;
 
           const recorder = new PCMRecorder(WORKLET_URL);
@@ -174,10 +201,18 @@ export default function SessionWithBackend() {
             setError(data.reason || data.type || "Speechmatics error");
             return;
           }
+          if (data.message === "PrimingStarted") {
+            setIsPriming(true);
+            return;
+          }
+          if (data.message === "PrimingComplete") {
+            setIsPriming(false);
+            return;
+          }
           handleReceiveMessage(activeSessionId)(data);
         } catch (err) {
-          console.log(err?.message || "")
-         }
+          console.log(err?.message || "");
+        }
       };
 
       ws.onerror = () => {
@@ -194,6 +229,7 @@ export default function SessionWithBackend() {
   const stopRecording = useCallback(async () => {
     setIsRecording(false);
     setConnectingAudio(false);
+    setIsPriming(false);
 
     if (recorderRef.current) {
       recorderRef.current.stopRecording();
@@ -218,10 +254,16 @@ export default function SessionWithBackend() {
 
   const startSession = useCallback(() => {
     if (!selectedSession || !canStartAnother) return;
-    if (selectedSession.status !== STATUS.DRAFT && selectedSession.status !== STATUS.PAUSED) return;
+    if (
+      selectedSession.status !== STATUS.DRAFT &&
+      selectedSession.status !== STATUS.PAUSED
+    )
+      return;
 
     setSessions((prev) =>
-      prev.map((s) => (s.id === selectedSession.id ? { ...s, status: STATUS.ACTIVE } : s))
+      prev.map((s) =>
+        s.id === selectedSession.id ? { ...s, status: STATUS.ACTIVE } : s,
+      ),
     );
     setError(null);
   }, [selectedSession, canStartAnother]);
@@ -231,17 +273,25 @@ export default function SessionWithBackend() {
     if (isRecording) await stopRecording();
 
     setSessions((prev) =>
-      prev.map((s) => (s.id === selectedSession.id ? { ...s, status: STATUS.PAUSED } : s))
+      prev.map((s) =>
+        s.id === selectedSession.id ? { ...s, status: STATUS.PAUSED } : s,
+      ),
     );
   }, [selectedSession, isRecording, stopRecording]);
 
   const closeSession = useCallback(async () => {
     if (!selectedSession) return;
-    if (selectedSession.status !== STATUS.ACTIVE && selectedSession.status !== STATUS.PAUSED) return;
+    if (
+      selectedSession.status !== STATUS.ACTIVE &&
+      selectedSession.status !== STATUS.PAUSED
+    )
+      return;
     if (isRecording) await stopRecording();
 
     setSessions((prev) =>
-      prev.map((s) => (s.id === selectedSession.id ? { ...s, status: STATUS.CLOSED } : s))
+      prev.map((s) =>
+        s.id === selectedSession.id ? { ...s, status: STATUS.CLOSED } : s,
+      ),
     );
     if (selectedSessionId === selectedSession.id) setSelectedSessionId(null);
   }, [selectedSession, selectedSessionId, isRecording, stopRecording]);
@@ -250,7 +300,8 @@ export default function SessionWithBackend() {
 
   const startSessionDisabled =
     !selectedSession ||
-    (selectedSession?.status !== STATUS.DRAFT && selectedSession?.status !== STATUS.PAUSED) ||
+    (selectedSession?.status !== STATUS.DRAFT &&
+      selectedSession?.status !== STATUS.PAUSED) ||
     !canStartAnother;
 
   const startSessionTitle = !selectedSession
@@ -307,9 +358,11 @@ export default function SessionWithBackend() {
           : selectedSession.status === STATUS.DRAFT && !canStartAnother
             ? "Another session is active. Pause or close it first, then start this one."
             : selectedSession.status === STATUS.ACTIVE && !isRecording
-              ? "Click « Start recording » to capture speech (audio goes to backend)." + lockHint
+              ? "Click « Start recording » to capture speech (audio goes to backend)." +
+                lockHint
               : selectedSession.status === STATUS.ACTIVE && isRecording
-                ? "Speak now. Click « Stop recording » when done (session continues)." + lockHint
+                ? "Speak now. Click « Stop recording » when done (session continues)." +
+                  lockHint
                 : selectedSession.status === STATUS.PAUSED
                   ? "Click « Start session » to resume, then « Start recording » to continue."
                   : "Session closed. Select another or create a new session.";
@@ -318,12 +371,16 @@ export default function SessionWithBackend() {
     <div style={containerStyle}>
       <h2>Session-wise discussion (via backend)</h2>
       <p style={{ fontSize: 14, color: "#666", marginBottom: 16 }}>
-        Same as session-direct but audio is sent to your backend over WebSocket; backend uses
-        Speechmatics and returns transcript. No API key in the browser.
+        Same as session-direct but audio is sent to your backend over WebSocket;
+        backend uses Speechmatics and returns transcript. No API key in the
+        browser.
       </p>
       <p style={{ fontSize: 13, color: "#888", marginBottom: 12 }}>
-        Tip: A brief pause between speakers helps diarization (Speaker 1 / Speaker 2).
+        Tip: A brief pause between speakers helps diarization (Speaker 1 /
+        Speaker 2).
       </p>
+
+      <AudioFileRecorder />
 
       {error && <div style={errorStyle}>{error}</div>}
 
@@ -459,18 +516,34 @@ export default function SessionWithBackend() {
           {selectedSession ? (
             <>
               <div style={transcriptHint}>
-                {selectedSession.status === STATUS.DRAFT && "Start this session to begin recording."}
-                {selectedSession.status === STATUS.ACTIVE && !isRecording && "Click Start recording (audio goes to backend)."}
-                {selectedSession.status === STATUS.ACTIVE && isRecording && (connectingAudio ? "Connecting… (improves speaker detection)" : "Recording…")}
-                {selectedSession.status === STATUS.PAUSED && "Session paused. Start session again and then Start recording to continue."}
+                {selectedSession.status === STATUS.DRAFT &&
+                  "Start this session to begin recording."}
+                {selectedSession.status === STATUS.ACTIVE &&
+                  !isRecording &&
+                  "Click Start recording (audio goes to backend)."}
+                {selectedSession.status === STATUS.ACTIVE &&
+                  isRecording &&
+                  (connectingAudio ? (
+                    "Connecting… (improves speaker detection)"
+                  ) : isPriming ? (
+                    <span>
+                      🎙 Identifying waiter voice…{" "}
+                    </span>
+                  ) : (
+                    "Recording…"
+                  ))}
+                {selectedSession.status === STATUS.PAUSED &&
+                  "Session paused. Start session again and then Start recording to continue."}
                 {selectedSession.status === STATUS.CLOSED && "Session closed."}
               </div>
               {displayTranscript.length === 0 ? (
-                <div style={emptyTranscript}>No conversation yet for this session.</div>
+                <div style={emptyTranscript}>
+                  No conversation yet for this session.
+                </div>
               ) : (
                 displayTranscript.flatMap((t, i) => {
                   const sentences = splitSentences(t.text);
-                  const speakerNum = t.speaker === "S1" ? "1" : "2";
+                  const speakerNum = t.speaker === "S1" ? "WAITER" : "CUSTOMER";
                   const isSpeaker1 = t.speaker === "S1";
                   // const speakerNum = t.speaker?.replace("S", "") || "?";
                   // const isPrimarySpeaker = t.speaker === "S1";
@@ -478,16 +551,20 @@ export default function SessionWithBackend() {
                   if (sentences.length === 0) {
                     return (
                       <div key={`${i}-0`} style={transcriptLine}>
-                        <span style={speakerPill(isSpeaker1)}>Speaker {speakerNum}</span>
+                        <span style={speakerPill(isSpeaker1)}>
+                          {speakerNum}
+                        </span>
                         {/* <span style={speakerPill(isPrimarySpeaker)}>Speaker {speakerNum}</span> */}
 
-                        <span style={transcriptLineText}>{t.text || "\u00a0"}</span>
+                        <span style={transcriptLineText}>
+                          {t.text || "\u00a0"}
+                        </span>
                       </div>
                     );
                   }
                   return sentences.map((sent, j) => (
                     <div key={`${i}-${j}`} style={transcriptLine}>
-                      <span style={speakerPill(isSpeaker1)}>Speaker {speakerNum}</span>
+                      <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
                       {/* <span style={speakerPill(isPrimarySpeaker)}>Speaker {speakerNum}</span> */}
 
                       <span style={transcriptLineText}>{sent}</span>

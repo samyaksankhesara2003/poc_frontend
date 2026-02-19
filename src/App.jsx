@@ -14,6 +14,7 @@ import SpeechToTextMultiSession from './pages/SessionUi'
 import DirectUiToSpeechSpeech from './pages/DirectUiToSpeechSpeech'
 import SessionDirect from './pages/SessionDirect'
 import SessionWithBackend from './pages/SessionWithBackend'
+import Identification from './pages/Identification'
 function App() {
   return (
     <>
@@ -42,6 +43,8 @@ function App() {
 
           {/* session with backend: WebSocket → backend → Speechmatics */}
           <Route path='/session-backend' element={<SessionWithBackend/>}/>
+
+          <Route path='/identification' element={<Identification/>}/>
         </Routes>
       </BrowserRouter>
     </>
