@@ -6,61 +6,14 @@ const WORKLET_URL = workletUrl;
 
 const RECORDING_SAMPLE_RATE = 16000;
 
-/** Delay before starting mic so backend can connect to Speechmatics first (helps diarization) */
-// const MIC_START_DELAY_MS = 1800;
-
-// const WS_URL =
-//   import.meta.env.VITE_WS_SESSION_URL || "ws://localhost:3000/session-backend";
 const AUDIO_SAVE_WS_URL =
   import.meta.env.VITE_WS_AUDIO_SAVE_URL || "ws://localhost:3000/save-audio";
 
-// const STATUS = {
-//   DRAFT: "draft",
-//   ACTIVE: "active",
-//   PAUSED: "paused",
-//   CLOSED: "closed",
-// };
 
 const buttonDisabled = {
   opacity: 0.55,
   cursor: "not-allowed",
 };
-
-// function newSession(name) {
-//   return {
-//     id: crypto.randomUUID(),
-//     name,
-//     status: STATUS.DRAFT,
-//     transcript: [],
-//     createdAt: Date.now(),
-//   };
-// }
-
-// function removeOverlap(prevText, newText) {
-//   const prev = prevText.trim().split(" ");
-//   const next = newText.trim().split(" ");
-//   let overlapLength = 0;
-//   const maxCheck = Math.min(prev.length, next.length);
-//   for (let i = 1; i <= maxCheck; i++) {
-//     const prevSlice = prev.slice(-i).join(" ");
-//     const nextSlice = next.slice(0, i).join(" ");
-//     if (prevSlice === nextSlice) overlapLength = i;
-//   }
-//   return next.slice(overlapLength).join(" ");
-// }
-
-// function isPunctuationOnly(s) {
-//   return /^[.,!?;:'"\s]+$/.test((s || "").trim());
-// }
-
-// /** Split text into sentences for one-per-line display */
-// function splitSentences(text) {
-//   if (!text || !String(text).trim()) return [];
-//   return String(text)
-//     .split(/(?<=[.!?])\s+/)
-//     .map((s) => s.trim())
-//     .filter(Boolean);
-// }
 
 function convertFloatTo16BitPCM(input) {
   const buffer = new ArrayBuffer(input.length * 2);

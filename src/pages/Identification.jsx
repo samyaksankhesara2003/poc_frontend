@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { PCMRecorder } from "@speechmatics/browser-audio-input";
 
 import workletUrl from "@speechmatics/browser-audio-input/pcm-audio-worklet.min.js?url";
-import AudioFileRecorder from "./AudioFileRecorder";
+// import AudioFileRecorder from "./AudioFileRecorder";
 const WORKLET_URL = workletUrl;
 
 const RECORDING_SAMPLE_RATE = 16000;
@@ -380,7 +380,7 @@ export default function Identification() {
         Speaker 2).
       </p>
 
-      <AudioFileRecorder />
+      {/* <AudioFileRecorder /> */}
 
       {error && <div style={errorStyle}>{error}</div>}
 
