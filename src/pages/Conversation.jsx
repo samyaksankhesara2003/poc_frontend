@@ -61,11 +61,41 @@ function convertFloatTo16BitPCM(input) {
   return buffer;
 }
 
+function buildWavBlob(pcmChunks, sampleRate = 16000) {
+  const totalLength = pcmChunks.reduce((acc, buf) => acc + buf.byteLength, 0);
+  const dataLength = totalLength;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + dataLength, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, dataLength, true);
+  let offset = 44;
+  for (const chunk of pcmChunks) {
+    new Uint8Array(buffer).set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
 export default function Conversation() {
   const navigate = useNavigate();
   const wsRef = useRef(null);
   const recorderRef = useRef(null);
   const audioContextRef = useRef(null);
+  const pcmChunksRef = useRef([]);
 
   const [user, setUser] = useState(null);
   const [tables, setTables] = useState([]);
@@ -195,6 +225,7 @@ export default function Conversation() {
     setError(null);
     setTranscript([]);
     setPayloadTranscribe([]);
+    pcmChunksRef.current = [];
 
     const existingStopped = sessions.find(
       (s) => s.tableId === selectedTableId && s.status === "stop"
@@ -242,9 +273,9 @@ export default function Conversation() {
           recorderRef.current = recorder;
 
           recorder.addEventListener("audio", (e) => {
-            if (wsRef.current?.readyState !== WebSocket.OPEN) return;
             const pcm = convertFloatTo16BitPCM(e.data);
-            wsRef.current.send(pcm);
+            pcmChunksRef.current.push(pcm);
+            if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(pcm);
           });
 
           await recorder.startRecording({ audioContext });
@@ -287,7 +318,6 @@ export default function Conversation() {
     if (!user || !selectedTableSession || selectedTableSession.status !== "active") return;
 
     const unique_session_id = selectedTableSession.unique_session_id;
-    const audio_path = `${unique_session_id}.wav`;
 
     if (recorderRef.current) {
       recorderRef.current.stopRecording();
@@ -311,27 +341,43 @@ export default function Conversation() {
       )
     );
 
+    let audio_path = `${unique_session_id}.wav`;
+    const chunks = pcmChunksRef.current;
+    if (chunks.length > 0) {
+      try {
+        const wavBlob = buildWavBlob(chunks, RECORDING_SAMPLE_RATE);
+        const file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
+        const form = new FormData();
+        form.append("audio", file, file.name);
+        form.append("unique_session_id", unique_session_id);
+        const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        if (data?.audio_path) audio_path = data.audio_path;
+      } catch (err) {
+        setError(err.response?.data?.error || err.message || "Failed to upload audio");
+        return;
+      }
+    }
+
     try {
       await axios.post(`${API_BASE}/poc/session`, {
         unique_session_id,
         waiter_id: user.id,
         table_id: selectedTableSession.tableId,
-        // transcriptions: transcript,
         transcriptions: payloadTranscribe,
-
         audio_path,
         status: "stop",
       });
     } catch (err) {
       setError(err.response?.data?.error || err.message || "Failed to save session");
     }
-  }, [user, selectedTableSession, transcript, API_BASE]);
+  }, [user, selectedTableSession, payloadTranscribe]);
 
   const endSession = useCallback(async () => {
     if (!user || !selectedTableSession || selectedTableSession.status !== "active") return;
 
     const unique_session_id = selectedTableSession.unique_session_id;
-    const audio_path = `${unique_session_id}.wav`;
 
     if (recorderRef.current) {
       recorderRef.current.stopRecording();
@@ -349,23 +395,42 @@ export default function Conversation() {
     setConnectingAudio(false);
     setIsPriming(false);
 
+    let audio_path = `${unique_session_id}.wav`;
+    const chunks = pcmChunksRef.current;
+    if (chunks.length > 0) {
+      try {
+        const wavBlob = buildWavBlob(chunks, RECORDING_SAMPLE_RATE);
+        const file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
+        const form = new FormData();
+        form.append("audio", file, file.name);
+        form.append("unique_session_id", unique_session_id);
+        const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        if (data?.audio_path) audio_path = data.audio_path;
+      } catch (err) {
+        setError(err.response?.data?.error || err.message || "Failed to upload audio");
+        return;
+      }
+    }
+
     try {
       await axios.post(`${API_BASE}/poc/session`, {
         unique_session_id,
         waiter_id: user.id,
         table_id: selectedTableSession.tableId,
-        // transcriptions: transcript,
         transcriptions: payloadTranscribe,
         audio_path,
         status: "end",
       });
     } catch (err) {
       setError(err.response?.data?.error || err.message || "Failed to end session");
+      return;
     }
 
     setSessions((prev) => prev.filter((s) => s.unique_session_id !== unique_session_id));
     setTranscript([]);
-  }, [user, selectedTableSession, transcript]);
+  }, [user, selectedTableSession, payloadTranscribe]);
 
   const handleSelectTable = (tableId) => {
     if (!canSwitchTable) return;
