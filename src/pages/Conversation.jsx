@@ -102,7 +102,7 @@ export default function Conversation() {
   const [selectedTableId, setSelectedTableId] = useState(null);
   const [sessions, setSessions] = useState([]);
   const [transcript, setTranscript] = useState([]);
-  const [payloadTranscribe, setPayloadTranscribe] = useState([]); // Backend-ready state
+  const [payloadTranscribe, setPayloadTranscribe] = useState([]); // Backend-ready state { role, text, tone? }
 
   const [isRecording, setIsRecording] = useState(false);
   const [connectingAudio, setConnectingAudio] = useState(false);
@@ -166,14 +166,16 @@ export default function Conversation() {
 
     const segments = [];
     for (const r of results) {
-      const content = r.alternatives?.[0]?.content;
-      const speaker = r.alternatives?.[0]?.speaker || "S1";
+      const alt = r.alternatives?.[0];
+      const content = alt?.content;
+      const speaker = alt?.speaker || "S1";
+      const tone = alt?.tone ?? "normal";
       if (content == null) continue;
       if (segments.length > 0 && segments[segments.length - 1].speaker === speaker) {
         const last = segments[segments.length - 1];
         last.text += isPunctuationOnly(content) ? content : (last.text ? " " : "") + content;
       } else {
-        segments.push({ speaker, text: content });
+        segments.push({ speaker, text: content, tone });
       }
     }
     if (segments.length === 0) return;
@@ -191,7 +193,7 @@ export default function Conversation() {
             };
           }
         } else {
-          next.push({ speaker: seg.speaker, text: seg.text });
+          next.push({ speaker: seg.speaker, text: seg.text, tone: seg.tone });
         }
       }
       return next;
@@ -201,6 +203,7 @@ export default function Conversation() {
 
       for (const seg of segments) {
         const role = resolveRole(seg.speaker);
+        const tone = seg.tone ?? "normal";
 
         const last = next[next.length - 1];
         if (last && last.role === role) {
@@ -208,7 +211,7 @@ export default function Conversation() {
             ? seg.text
             : (last.text ? " " : "") + seg.text;
         } else {
-          next.push({ role, text: seg.text });
+          next.push({ role, text: seg.text, tone });
         }
       }
 
@@ -545,11 +548,13 @@ export default function Conversation() {
               const sentences = splitSentences(t.text);
               const speakerNum = t.speaker === "S1" ? "WAITER" : "CUSTOMER";
               const isSpeaker1 = t.speaker === "S1";
+              const tone = t.tone ?? "normal";
               if (sentences.length === 0) {
                 return (
                   <div key={`${i}-0`} style={transcriptLine}>
                     <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
                     <span style={transcriptLineText}>{t.text || "\u00a0"}</span>
+                    <span style={toneBadge}>{tone}</span>
                   </div>
                 );
               }
@@ -557,6 +562,7 @@ export default function Conversation() {
                 <div key={`${i}-${j}`} style={transcriptLine}>
                   <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
                   <span style={transcriptLineText}>{sent}</span>
+                  {j === 0 && <span style={toneBadge}>{tone}</span>}
                 </div>
               ));
             })
@@ -673,3 +679,11 @@ function speakerPill(isSpeaker1) {
   };
 }
 const transcriptLineText = { flex: 1, minWidth: 0, fontSize: 16, lineHeight: 1.5 };
+const toneBadge = {
+  fontSize: 11,
+  padding: "2px 8px",
+  borderRadius: 4,
+  background: "#e0e0e0",
+  color: "#555",
+  flexShrink: 0,
+};
