@@ -103,13 +103,15 @@ export default function Conversation() {
   const [sessions, setSessions] = useState([]);
   const [transcript, setTranscript] = useState([]);
   const [payloadTranscribe, setPayloadTranscribe] = useState([]); // Backend-ready state
+console.log(transcript,">>>>>>>>>>.transcript");
 
   const [isRecording, setIsRecording] = useState(false);
   const [connectingAudio, setConnectingAudio] = useState(false);
   const [isPriming, setIsPriming] = useState(false);
   const [error, setError] = useState(null);
   const [loadingTables, setLoadingTables] = useState(true);
-
+  const [tones, setTones] = useState({});
+console.log(tones,">>>>>>>>>>.");
   const activeSession = sessions.find((s) => s.status === "active");
   const selectedTableSession = selectedTableId
     ? sessions.find((s) => s.tableId === selectedTableId)
@@ -225,6 +227,7 @@ export default function Conversation() {
     setError(null);
     setTranscript([]);
     setPayloadTranscribe([]);
+    setTones({});
     pcmChunksRef.current = [];
 
     const existingStopped = sessions.find(
@@ -298,6 +301,17 @@ export default function Conversation() {
           }
           if (data.message === "PrimingStarted") setIsPriming(true);
           if (data.message === "PrimingComplete") setIsPriming(false);
+          if (data.message === "ToneUpdate" && data.speaker) {
+            setTones((prev) => ({
+              ...prev,
+              [data.speaker]: {
+                tone: data.tone,
+                emotion: data.emotion,
+                textSentiment: data.textSentiment,
+              },
+            }));
+            return;
+          }
           handleReceiveMessage(data);
         } catch (_) { }
       };
@@ -430,6 +444,7 @@ export default function Conversation() {
 
     setSessions((prev) => prev.filter((s) => s.unique_session_id !== unique_session_id));
     setTranscript([]);
+    setTones({});
   }, [user, selectedTableSession, payloadTranscribe]);
 
   const handleSelectTable = (tableId) => {
@@ -538,6 +553,15 @@ export default function Conversation() {
             {selectedTableSession?.status === "stop" && "Session paused. Start recording to continue."}
             {!selectedTableSession && selectedTableId && "Select a table and start recording."}
           </div>
+          {Object.keys(tones).length > 0 && (
+            <div style={toneRow}>
+              {Object.entries(tones).map(([speaker, { tone }]) => (
+                <span key={speaker} style={toneBadge}>
+                  {speaker === "S1" ? "WAITER" : speaker.startsWith("S") ? `Speaker ${speaker.slice(1)}` : speaker}: <strong>{tone}</strong>
+                </span>
+              ))}
+            </div>
+          )}
           {displayTranscript.length === 0 ? (
             <div style={emptyTranscript}>No conversation yet.</div>
           ) : (
@@ -652,6 +676,14 @@ const transcriptBox = {
   lineHeight: 1.6,
 };
 const transcriptHint = { fontSize: 13, color: "#666", marginBottom: 12 };
+const toneRow = { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 };
+const toneBadge = {
+  fontSize: 12,
+  padding: "4px 10px",
+  borderRadius: 6,
+  background: "#e8eaf6",
+  color: "#3949ab",
+};
 const emptyTranscript = { color: "#999", fontStyle: "italic" };
 const transcriptLine = {
   display: "flex",
