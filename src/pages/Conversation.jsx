@@ -12,14 +12,23 @@ const WS_BASE =
   import.meta.env.VITE_WS_SESSION_URL || "ws://localhost:3000/session-backend";
 const POC_USER_KEY = "poc_user";
 
-function getSessionWsUrl() {
+function getSessionWsUrl(language = "en") {
   try {
     const raw = localStorage.getItem(POC_USER_KEY);
     const user = raw ? JSON.parse(raw) : null;
     const email = user?.email;
-    if (!email) return WS_BASE;
-    const sep = WS_BASE.includes("?") ? "&" : "?";
-    return `${WS_BASE}${sep}email=${encodeURIComponent(email)}`;
+    let url = WS_BASE;
+    const params = [];
+    
+    if (email) params.push(`email=${encodeURIComponent(email)}`);
+    if (language && ["en", "es"].includes(language)) params.push(`lang=${language}`);
+    
+    if (params.length > 0) {
+      const sep = url.includes("?") ? "&" : "?";
+      url = `${url}${sep}${params.join("&")}`;
+    }
+    
+    return url;
   } catch {
     return WS_BASE;
   }
@@ -90,18 +99,19 @@ function buildWavBlob(pcmChunks, sampleRate = 16000) {
   return new Blob([buffer], { type: "audio/wav" });
 }
 
-// ── Tone color/icon mapping (hospitality-specific) ──
+// ── Tone color/icon mapping (Updated 10-category system) ──
+// Matches backend TONE_CATEGORIES structure
 const TONE_CONFIG = {
-  positive_friendly:     { color: "#43a047", bg: "#e8f5e9", icon: "😊", label: "Positive / Friendly" },
-  neutral_casual:        { color: "#78909c", bg: "#eceff1", icon: "😐", label: "Neutral / Casual" },
-  confused_unsure:       { color: "#7b1fa2", bg: "#f3e5f5", icon: "🤔", label: "Confused / Unsure" },
-  mild_dissatisfaction:  { color: "#ef6c00", bg: "#fff3e0", icon: "😕", label: "Mild Dissatisfaction" },
-  frustration_complaint: { color: "#e53935", bg: "#ffebee", icon: "😤", label: "Frustration / Complaint" },
-  strong_anger:          { color: "#b71c1c", bg: "#ffcdd2", icon: "😡", label: "Strong Anger" },
-  upsell_opportunity:    { color: "#00897b", bg: "#e0f2f1", icon: "🤩", label: "Upsell Opportunity" },
-  bored_disengaged:      { color: "#5c6bc0", bg: "#e8eaf6", icon: "😴", label: "Bored / Disengaged" },
-  polite_complaint:      { color: "#f57c00", bg: "#fff8e1", icon: "🙂", label: "Polite Complaint" },
-  light_humor:           { color: "#2e7d32", bg: "#e8f5e9", icon: "😄", label: "Light Humor / Friendly" },
+  neutral_casual:        { color: "#78909c", bg: "#eceff1", icon: "😐", label: "Neutral / Casual", priority: "normal" },
+  positive_friendly:     { color: "#43a047", bg: "#e8f5e9", icon: "😊", label: "Positive / Friendly", priority: "low" },
+  polite_request:        { color: "#2196f3", bg: "#e3f2fd", icon: "🙋", label: "Polite Request", priority: "normal" },
+  upsell_opportunity:    { color: "#00897b", bg: "#e0f2f1", icon: "🤩", label: "Upsell Opportunity", priority: "low" },
+  neutral_complaint:     { color: "#ff9800", bg: "#fff3e0", icon: "😐", label: "Neutral Complaint", priority: "high" },
+  polite_complaint:      { color: "#f57c00", bg: "#fff8e1", icon: "🙂", label: "Polite Complaint", priority: "high" },
+  frustration_complaint: { color: "#e53935", bg: "#ffebee", icon: "😤", label: "Frustration / Complaint", priority: "high" },
+  angry_escalation:      { color: "#b71c1c", bg: "#ffcdd2", icon: "😡", label: "Angry / Escalation", priority: "critical" },
+  confusion_uncertain:   { color: "#7b1fa2", bg: "#f3e5f5", icon: "🤔", label: "Confusion / Uncertain", priority: "medium" },
+  silent_or_no_speech:   { color: "#9e9e9e", bg: "#f5f5f5", icon: "🔇", label: "Silent / No Speech", priority: "none" },
 };
 
 function MeterBar({ value, max = 1, color = "#2196f3", label, suffix = "" }) {
@@ -125,16 +135,69 @@ function TonePanel({ tone }) {
   }
   const toneKey = tone.tone || null;
   const cfg = toneKey ? (TONE_CONFIG[toneKey] || TONE_CONFIG.neutral_casual) : null;
+  const businessAction = tone.businessAction || null;
+  
+  const priorityColors = {
+    "low": "#43a047",
+    "normal": "#78909c",
+    "medium": "#7b1fa2",
+    "medium-high": "#ef6c00",
+    "high": "#e53935",
+    "critical": "#b71c1c",
+  };
+
   return (
     <div>
       {cfg ? (
-        <div style={{ ...toneBadgeLarge, background: cfg.bg, color: cfg.color, borderColor: cfg.color }}>
-          <span style={{ fontSize: 22 }}>{cfg.icon}</span>
-          <span style={{ fontWeight: 700, fontSize: 14 }}>{cfg.label}</span>
-          {tone.tone_score != null && (
-            <span style={{ fontSize: 11, opacity: 0.7, marginLeft: 4 }}>
-              {(tone.tone_score * 100).toFixed(0)}%
-            </span>
+        <div>
+          <div style={{ ...toneBadgeLarge, background: cfg.bg, color: cfg.color, borderColor: cfg.color }}>
+            <span style={{ fontSize: 22 }}>{cfg.icon}</span>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>{cfg.label}</span>
+            {(tone.tone_score != null || tone.confidence != null) && (
+              <span style={{ fontSize: 11, opacity: 0.7, marginLeft: 4 }}>
+                {((tone.confidence || tone.tone_score || 0) * 100).toFixed(0)}%
+              </span>
+            )}
+          </div>
+
+          {/* Intent and Action Required */}
+          {(tone.intent || tone.requires_action !== undefined) && (
+            <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {tone.intent && (
+                <Tag label="Intent" value={tone.intent} color="#2196f3" />
+              )}
+              {tone.requires_action !== undefined && (
+                <Tag 
+                  label="Action" 
+                  value={tone.requires_action ? "Required" : "None"} 
+                  color={tone.requires_action ? "#e53935" : "#43a047"} 
+                />
+              )}
+            </div>
+          )}
+          
+          {businessAction && (
+            <div style={{ marginTop: 10, padding: 10, background: "#f8f9fa", borderRadius: 6, border: "1px solid #e0e0e0" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#666", marginBottom: 4, textTransform: "uppercase" }}>
+                Business Action
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: priorityColors[businessAction.priority] || "#666", marginBottom: 4 }}>
+                Priority: {businessAction.priority.toUpperCase()}
+              </div>
+              <div style={{ fontSize: 12, color: "#333", marginBottom: 6 }}>
+                {businessAction.action}
+              </div>
+              {businessAction.nextSteps && businessAction.nextSteps.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#666", marginBottom: 4 }}>Next Steps:</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: "#555" }}>
+                    {businessAction.nextSteps.map((step, i) => (
+                      <li key={i} style={{ marginBottom: 2 }}>{step}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           )}
         </div>
       ) : (
@@ -279,6 +342,7 @@ export default function Conversation() {
   const [isPriming, setIsPriming] = useState(false);
   const [error, setError] = useState(null);
   const [loadingTables, setLoadingTables] = useState(true);
+  const [language, setLanguage] = useState("en"); // "en" or "es"
 
   // ── Analysis state ──
   const [toneAnalysis, setToneAnalysis] = useState(null);
@@ -350,13 +414,20 @@ export default function Conversation() {
 
     // Handle LLM tone classification (per-speaker tone label)
     if (data.message === "ToneClassification") {
-      const { speaker, tone, score } = data;
+      const { speaker, tone, score, confidence, intent, requires_action, businessAction } = data;
+
+      // Skip silence
+      if (tone === "silent_or_no_speech") return;
 
       // Update side panel with latest LLM tone
       setToneAnalysis((prev) => ({
         ...prev,
         tone,
-        tone_score: score,
+        tone_score: confidence || score,
+        confidence: confidence || score,
+        intent: intent || null,
+        requires_action: requires_action !== undefined ? requires_action : null,
+        businessAction: businessAction || null,
       }));
 
       // Stamp on the last segment that belongs to this speaker
@@ -364,14 +435,29 @@ export default function Conversation() {
         const next = [...prev];
         for (let i = next.length - 1; i >= 0; i--) {
           if (next[i].speaker === speaker) {
-            next[i] = { ...next[i], tone: { tone, score } };
+            next[i] = { 
+              ...next[i], 
+              tone: { 
+                tone, 
+                score: confidence || score,
+                confidence: confidence || score,
+                intent: intent || null,
+                requires_action: requires_action !== undefined ? requires_action : null,
+              } 
+            };
             break;
           }
         }
         return next;
       });
 
-      latestToneRef.current = { tone, score };
+      latestToneRef.current = { 
+        tone, 
+        score: confidence || score,
+        confidence: confidence || score,
+        intent: intent || null,
+        requires_action: requires_action !== undefined ? requires_action : null,
+      };
       return;
     }
 
@@ -496,7 +582,7 @@ export default function Conversation() {
     setIsRecording(true);
 
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(getSessionWsUrl());
+      const ws = new WebSocket(getSessionWsUrl(language));
       wsRef.current = ws;
 
       ws.onopen = async () => {
@@ -551,6 +637,7 @@ export default function Conversation() {
     activeSession,
     isRecording,
     handleReceiveMessage,
+    language,
   ]);
 
   const stopRecording = useCallback(async () => {
@@ -756,6 +843,24 @@ export default function Conversation() {
             >
               End session
             </button>
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              disabled={isRecording}
+              style={{
+                padding: "8px 12px",
+                borderRadius: 6,
+                border: "1px solid #ddd",
+                fontSize: 13,
+                fontWeight: 500,
+                background: "#fff",
+                cursor: isRecording ? "not-allowed" : "pointer",
+                opacity: isRecording ? 0.6 : 1,
+              }}
+            >
+              <option value="en">English</option>
+              <option value="es">Español</option>
+            </select>
             <button
               type="button"
               onClick={() => setShowAnalysis((v) => !v)}
