@@ -101,6 +101,7 @@ export default function Conversation() {
   const [tables, setTables] = useState([]);
   const [selectedTableId, setSelectedTableId] = useState(null);
   const [sessions, setSessions] = useState([]);
+
   const [transcript, setTranscript] = useState([]);
   const [payloadTranscribe, setPayloadTranscribe] = useState([]); // Backend-ready state
 
