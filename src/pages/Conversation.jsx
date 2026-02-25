@@ -334,6 +334,7 @@ export default function Conversation() {
   const [tables, setTables] = useState([]);
   const [selectedTableId, setSelectedTableId] = useState(null);
   const [sessions, setSessions] = useState([]);
+  
   const [transcript, setTranscript] = useState([]);
   const [payloadTranscribe, setPayloadTranscribe] = useState([]);
 
@@ -451,6 +452,27 @@ export default function Conversation() {
         return next;
       });
 
+      // Stamp the corresponding payload segment too (so we can persist tone)
+      setPayloadTranscribe((prev) => {
+        const next = [...prev];
+        for (let i = next.length - 1; i >= 0; i--) {
+          if (next[i]?.speaker === speaker) {
+            next[i] = {
+              ...next[i],
+              tone: {
+                tone,
+                score: confidence || score,
+                confidence: confidence || score,
+                intent: intent || null,
+                requires_action: requires_action !== undefined ? requires_action : null,
+              },
+            };
+            break;
+          }
+        }
+        return next;
+      });
+
       latestToneRef.current = { 
         tone, 
         score: confidence || score,
@@ -513,12 +535,17 @@ export default function Conversation() {
       for (const seg of segments) {
         const role = resolveRole(seg.speaker);
         const last = next[next.length - 1];
-        if (last && last.role === role) {
-          last.text += isPunctuationOnly(seg.text)
-            ? seg.text
-            : (last.text ? " " : "") + seg.text;
+
+        // Mirror transcript segmentation: merge only when the SAME speaker continues
+        if (last && last.speaker === seg.speaker) {
+          const cleanPart = removeOverlap(last.text, seg.text);
+          if (cleanPart) {
+            last.text += isPunctuationOnly(cleanPart)
+              ? ""
+              : (last.text ? " " : "") + cleanPart;
+          }
         } else {
-          next.push({ role, text: seg.text });
+          next.push({ role, speaker: seg.speaker, text: seg.text, tone: null });
         }
       }
       return next;
@@ -542,24 +569,30 @@ export default function Conversation() {
     const table = tables.find((t) => t.id === selectedTableId);
     if (!table) return;
 
-    setError(null);
-    setTranscript([]);
-    setPayloadTranscribe([]);
-    setToneAnalysis(null);
-    setContentAnalysis(null);
-    toneHistoryRef.current = [];
-    contentHistoryRef.current = null;
-    latestToneRef.current = null;
-    pcmChunksRef.current = [];
-
     const existingStopped = sessions.find(
       (s) => s.tableId === selectedTableId && s.status === "stop"
     );
-    const unique_session_id = existingStopped
-      ? existingStopped.unique_session_id
-      : crypto.randomUUID();
+    const isNewSession = !existingStopped;
+    const unique_session_id = isNewSession
+      ? crypto.randomUUID()
+      : existingStopped.unique_session_id;
 
-    if (!existingStopped) {
+    setError(null);
+
+    // For a brand-new session, clear all previous state.
+    // For a resumed session, keep previous transcript and analysis.
+    if (isNewSession) {
+      setTranscript([]);
+      setPayloadTranscribe([]);
+      setToneAnalysis(null);
+      setContentAnalysis(null);
+      toneHistoryRef.current = [];
+      contentHistoryRef.current = null;
+      latestToneRef.current = null;
+      pcmChunksRef.current = [];
+    }
+
+    if (isNewSession) {
       setSessions((prev) => [
         ...prev,
         {
@@ -674,6 +707,7 @@ export default function Conversation() {
         const wavBlob = buildWavBlob(chunks, RECORDING_SAMPLE_RATE);
         const file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
         const form = new FormData();
+        
         form.append("audio", file, file.name);
         form.append("unique_session_id", unique_session_id);
         const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
@@ -691,7 +725,12 @@ export default function Conversation() {
         unique_session_id,
         waiter_id: user.id,
         table_id: selectedTableSession.tableId,
-        transcriptions: payloadTranscribe,
+        transcriptions: payloadTranscribe.map(({ role, speaker, text, tone }) => ({
+          role,
+          speaker,
+          text,
+          tone,
+        })),
         audio_path,
         status: "stop",
       });
@@ -746,7 +785,12 @@ export default function Conversation() {
         unique_session_id,
         waiter_id: user.id,
         table_id: selectedTableSession.tableId,
-        transcriptions: payloadTranscribe,
+        transcriptions: payloadTranscribe.map(({ role, speaker, text, tone }) => ({
+          role,
+          speaker,
+          text,
+          tone,
+        })),
         audio_path,
         status: "end",
       });
@@ -762,17 +806,67 @@ export default function Conversation() {
     setContentAnalysis(null);
   }, [user, selectedTableSession, payloadTranscribe, saveAnalysis]);
 
-  const handleSelectTable = (tableId) => {
-    if (!canSwitchTable) return;
-    setSelectedTableId(tableId);
-    setError(null);
-  };
+  const handleSelectTable = useCallback(
+    async (tableId) => {
+      if (!canSwitchTable) return;
+
+      setSelectedTableId(tableId);
+      setError(null);
+
+      const sessionForTable = sessions.find((s) => s.tableId === tableId);
+
+      // No previous session for this table – clear current view
+      if (!sessionForTable) {
+        setTranscript([]);
+        setPayloadTranscribe([]);
+        setToneAnalysis(null);
+        setContentAnalysis(null);
+        return;
+      }
+
+      try {
+        const { data } = await axios.get(`${API_BASE}/poc/conversation`, {
+          params: { unique_session_id: sessionForTable.unique_session_id },
+        });
+
+        const conv = data?.data;
+        const transcriptions = conv?.transcriptions || [];
+        const items = Array.isArray(transcriptions) ? transcriptions : [];
+
+        // Map stored roles back to speakers for UI
+        const restoredTranscript = items.map((seg) => ({
+          speaker: seg.speaker || (seg.role === "WAITER" ? "S1" : "S2"),
+          text: seg.text || "",
+          tone: seg.tone || null,
+        }));
+
+        setTranscript(restoredTranscript);
+        setPayloadTranscribe(
+          items.map((seg) => ({
+            role: seg.role,
+            speaker: seg.speaker || (seg.role === "WAITER" ? "S1" : "S2"),
+            text: seg.text || "",
+            tone: seg.tone || null,
+          }))
+        );
+      } catch (err) {
+        console.error("Failed to load previous conversation:", err);
+        setError(
+          err.response?.data?.error ||
+            err.message ||
+            "Failed to load previous conversation"
+        );
+        setTranscript([]);
+        setPayloadTranscribe([]);
+      }
+    },
+    [canSwitchTable, sessions]
+  );
 
   const displayTranscript = transcript;
   const btnDisabled = { opacity: 0.55, cursor: "not-allowed" };
 
-  if (!user) return null;
-
+  if (!user) return null;  
   return (
     <div style={pageContainer}>
       <style>{`@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.4 } }`}</style>
