@@ -168,75 +168,205 @@ export default function Profile() {
 
   return (
     <div style={styles.container}>
-      <div style={styles.card}>
+      <style>{`
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
+        }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .profile-card {
+          animation: fadeIn 0.5s ease-out;
+        }
+        button:hover:not(:disabled) {
+          transform: translateY(-2px);
+        }
+        button:active:not(:disabled) {
+          transform: translateY(0);
+        }
+        .recording-dot {
+          animation: pulse 1.5s infinite;
+        }
+        .logout-btn:hover {
+          background: #f8fafc !important;
+          border-color: #cbd5e1 !important;
+          transform: translateY(-2px);
+        }
+        .record-btn:hover:not(:disabled) {
+          transform: translateY(-2px);
+          box-shadow: 0 6px 16px -4px rgba(16, 185, 129, 0.4) !important;
+        }
+        .stop-btn:hover:not(:disabled) {
+          transform: translateY(-2px);
+          box-shadow: 0 6px 16px -4px rgba(239, 68, 68, 0.4) !important;
+        }
+        .start-session-btn:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 8px 20px -4px rgba(102, 126, 234, 0.5) !important;
+        }
+      `}</style>
+      
+      <div className="profile-card" style={styles.card}>
+        {/* Header Section */}
         <div style={styles.header}>
-          <h2 style={styles.title}>Profile</h2>
-          <button type="button" onClick={handleLogout} style={styles.logoutBtn}>
-            Logout
+          <div style={styles.headerLeft}>
+            <div style={styles.avatar}>
+              {user.email?.[0]?.toUpperCase() || user.username?.[0]?.toUpperCase() || "U"}
+            </div>
+            <div>
+              <h1 style={styles.title}>Profile</h1>
+              <p style={styles.subtitle}>Manage your account settings</p>
+            </div>
+          </div>
+          <button 
+            type="button" 
+            onClick={handleLogout} 
+            className="logout-btn"
+            style={styles.logoutBtn}
+          >
+            <span>🚪</span>
+            <span>Logout</span>
           </button>
         </div>
 
-        <div style={styles.section}>
-          <div style={styles.label}>Name</div>
-          <div style={styles.value}>{user.username}</div>
+        {/* User Info Section */}
+        <div style={styles.infoSection}>
+          <div style={styles.infoCard}>
+            <div style={styles.infoIcon}>👤</div>
+            <div style={styles.infoContent}>
+              <div style={styles.infoLabel}>Name</div>
+              <div style={styles.infoValue}>{user.username}</div>
+            </div>
+          </div>
+          
+          <div style={styles.infoCard}>
+            <div style={styles.infoIcon}>📧</div>
+            <div style={styles.infoContent}>
+              <div style={styles.infoLabel}>Email</div>
+              <div style={styles.infoValue}>{user.email}</div>
+            </div>
+          </div>
+          
+          {user.audio_path && (
+            <div style={styles.infoCard}>
+              <div style={styles.infoIcon}>🎵</div>
+              <div style={styles.infoContent}>
+                <div style={styles.infoLabel}>Audio Sample</div>
+                <div style={styles.infoValueMuted}>{user.audio_path}</div>
+              </div>
+            </div>
+          )}
         </div>
-        <div style={styles.section}>
-          <div style={styles.label}>Email</div>
-          <div style={styles.value}>{user.email}</div>
-        </div>
+
+        {/* Start Session Section - Only visible if audio sample exists */}
         {user.audio_path && (
-          <div style={styles.section}>
-            <div style={styles.label}>Audio sample</div>
-            <div style={styles.valueMuted}>{user.audio_path}</div>
+          <div style={styles.sessionSection}>
+            <div style={styles.sessionCard}>
+              <div style={styles.sessionIcon}>💬</div>
+              <div style={styles.sessionContent}>
+                <h3 style={styles.sessionTitle}>Ready to Start?</h3>
+                <p style={styles.sessionDescription}>
+                  Begin a new conversation session to record and analyze customer interactions
+                </p>
+                <button
+                  type="button"
+                  onClick={() => navigate("/conversation")}
+                  className="start-session-btn"
+                  style={styles.startSessionBtn}
+                >
+                  <span>🚀</span>
+                  <span>Start Session</span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
-        <hr style={styles.hr} />
+        {/* Recording Section */}
+        <div style={styles.recordingSection}>
+          <div style={styles.sectionHeader}>
+            <span style={styles.sectionIcon}>🎙️</span>
+            <div>
+              <h3 style={styles.sectionTitle}>Record Audio Sample</h3>
+              <p style={styles.sectionHint}>
+                Record your voice to enable Speechmatics voice recognition
+              </p>
+            </div>
+          </div>
 
-        <h3 style={styles.subtitle}>Record your audio sample</h3>
-        <p style={styles.hint}>Start to record, Stop to save. Audio is stored for Speechmatics.</p>
+          <div style={styles.recordControls}>
+            <button
+              type="button"
+              onClick={startRecording}
+              disabled={isRecording || isConnecting || uploading}
+              className="record-btn"
+              style={{
+                ...styles.recordBtn,
+                ...(isRecording || isConnecting || uploading ? styles.btnDisabled : {}),
+              }}
+            >
+              {isConnecting ? (
+                <>
+                  <span style={styles.spinner}></span>
+                  <span>Connecting...</span>
+                </>
+              ) : (
+                <>
+                  <span>🎤</span>
+                  <span>Start Recording</span>
+                </>
+              )}
+            </button>
+            
+            <button
+              type="button"
+              onClick={stopRecording}
+              disabled={!isRecording}
+              className="stop-btn"
+              style={{
+                ...styles.stopBtn,
+                ...(!isRecording ? styles.btnDisabled : {}),
+              }}
+            >
+              <span>⏹️</span>
+              <span>Stop</span>
+            </button>
+          </div>
 
-        <div style={styles.recordRow}>
-          <button
-            type="button"
-            onClick={startRecording}
-            disabled={isRecording || isConnecting || uploading}
-            style={{
-              ...styles.recordBtn,
-              ...(isRecording || isConnecting || uploading ? styles.btnDisabled : {}),
-            }}
-          >
-            {isConnecting ? "Connecting…" : "▶ Start"}
-          </button>
-          <button
-            type="button"
-            onClick={stopRecording}
-            disabled={!isRecording}
-            style={{
-              ...styles.stopBtn,
-              ...(!isRecording ? styles.btnDisabled : {}),
-            }}
-          >
-            ■ Stop
-          </button>
           {(isRecording || isConnecting) && (
-            <span style={styles.recLabel}>
-              {isConnecting ? "Connecting…" : `REC ${formatTime(elapsed)}`}
-            </span>
+            <div style={styles.recordingIndicator}>
+              <span className="recording-dot" style={styles.recordingDot}></span>
+              <span style={styles.recLabel}>
+                {isConnecting ? "Connecting..." : `Recording: ${formatTime(elapsed)}`}
+              </span>
+            </div>
+          )}
+
+          {uploading && (
+            <div style={styles.uploadingCard}>
+              <span style={styles.spinnerGreen}></span>
+              <span>Saving audio...</span>
+            </div>
+          )}
+
+          {uploadStatus.message && (
+            <div style={{
+              ...styles.statusCard,
+              ...(uploadStatus.type === "error" ? styles.statusError : styles.statusSuccess),
+            }}>
+              <span style={styles.statusIcon}>
+                {uploadStatus.type === "error" ? "❌" : "✅"}
+              </span>
+              <span>{uploadStatus.message}</span>
+            </div>
           )}
         </div>
-        {uploading && <p style={styles.uploading}>Saving audio…</p>}
-
-        {uploadStatus.message && (
-          <p
-            style={{
-              ...styles.status,
-              color: uploadStatus.type === "error" ? "#e94560" : "#4ecca3",
-            }}
-          >
-            {uploadStatus.message}
-          </p>
-        )}
       </div>
     </div>
   );
@@ -245,71 +375,310 @@ export default function Profile() {
 const styles = {
   container: {
     minHeight: "100vh",
-    padding: 24,
-    background: "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)",
+    padding: "32px 24px",
+    background: "linear-gradient(to bottom, #f8fafc 0%, #f1f5f9 100%)",
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif",
   },
   card: {
-    maxWidth: 520,
+    maxWidth: 680,
     margin: "0 auto",
-    background: "#0f3460",
-    padding: 28,
-    borderRadius: 12,
-    boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+    background: "#ffffff",
+    padding: "40px",
+    borderRadius: 24,
+    boxShadow: "0 20px 60px rgba(0,0,0,0.1), 0 0 0 1px rgba(0,0,0,0.05)",
   },
   header: {
     display: "flex",
     justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 24,
+    alignItems: "flex-start",
+    marginBottom: 32,
+    paddingBottom: 24,
+    borderBottom: "2px solid #f1f5f9",
   },
-  title: { margin: 0, color: "#e94560", fontSize: 24, fontWeight: 600 },
-  logoutBtn: {
-    padding: "8px 14px",
-    borderRadius: 8,
-    border: "1px solid #e94560",
-    background: "transparent",
-    color: "#e94560",
-    cursor: "pointer",
-    fontSize: 14,
-  },
-  section: { marginBottom: 16 },
-  label: { color: "#a2a8d3", fontSize: 12, marginBottom: 4 },
-  value: { color: "#eee", fontSize: 16 },
-  valueMuted: { color: "#8892b0", fontSize: 14 },
-  hr: { border: "none", borderTop: "1px solid #16213e", margin: "20px 0" },
-  subtitle: { color: "#a2a8d3", fontSize: 16, margin: "0 0 8px" },
-  hint: { color: "#8892b0", fontSize: 13, margin: "0 0 16px" },
-  recordRow: {
+  headerLeft: {
     display: "flex",
     alignItems: "center",
-    gap: 10,
-    flexWrap: "wrap",
+    gap: 16,
   },
-  btnDisabled: { opacity: 0.55, cursor: "not-allowed" },
-  recordBtn: {
-    padding: "12px 20px",
-    borderRadius: 8,
-    border: "none",
-    background: "#16213e",
-    color: "#e94560",
+  avatar: {
+    width: 64,
+    height: 64,
+    borderRadius: "50%",
+    background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+    color: "#ffffff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontWeight: 700,
+    fontSize: 24,
+    boxShadow: "0 4px 12px rgba(102, 126, 234, 0.3)",
+  },
+  title: {
+    margin: 0,
+    background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+    WebkitBackgroundClip: "text",
+    WebkitTextFillColor: "transparent",
+    backgroundClip: "text",
+    fontSize: 28,
+    fontWeight: 700,
+    letterSpacing: -0.5,
+  },
+  subtitle: {
+    margin: "4px 0 0 0",
+    color: "#64748b",
+    fontSize: 14,
+    fontWeight: 400,
+  },
+  logoutBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "10px 18px",
+    borderRadius: 12,
+    border: "2px solid #e2e8f0",
+    background: "#ffffff",
+    color: "#475569",
     cursor: "pointer",
     fontSize: 14,
+    fontWeight: 600,
+    transition: "all 0.2s ease",
+  },
+  infoSection: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+    marginBottom: 32,
+  },
+  infoCard: {
+    display: "flex",
+    alignItems: "center",
+    gap: 16,
+    padding: "16px 20px",
+    background: "linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)",
+    borderRadius: 16,
+    border: "1px solid #e2e8f0",
+  },
+  infoIcon: {
+    fontSize: 24,
+    width: 48,
+    height: 48,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#ffffff",
+    borderRadius: 12,
+    boxShadow: "0 2px 4px rgba(0,0,0,0.05)",
+  },
+  infoContent: {
+    flex: 1,
+  },
+  infoLabel: {
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  infoValue: {
+    color: "#1e293b",
+    fontSize: 16,
+    fontWeight: 600,
+  },
+  infoValueMuted: {
+    color: "#64748b",
+    fontSize: 14,
+    fontWeight: 500,
+  },
+  sessionSection: {
+    marginBottom: 32,
+  },
+  sessionCard: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 20,
+    padding: "24px",
+    background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+    borderRadius: 20,
+    boxShadow: "0 8px 24px rgba(102, 126, 234, 0.3)",
+  },
+  sessionIcon: {
+    fontSize: 40,
+    flexShrink: 0,
+  },
+  sessionContent: {
+    flex: 1,
+  },
+  sessionTitle: {
+    margin: "0 0 8px 0",
+    color: "#ffffff",
+    fontSize: 22,
+    fontWeight: 700,
+  },
+  sessionDescription: {
+    margin: "0 0 20px 0",
+    color: "rgba(255, 255, 255, 0.9)",
+    fontSize: 14,
+    fontWeight: 400,
+    lineHeight: 1.5,
+  },
+  startSessionBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "14px 28px",
+    borderRadius: 12,
+    border: "none",
+    background: "#ffffff",
+    color: "#667eea",
+    cursor: "pointer",
+    fontSize: 16,
+    fontWeight: 700,
+    transition: "all 0.2s ease",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
+  },
+  recordingSection: {
+    padding: "24px",
+    background: "linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)",
+    borderRadius: 20,
+    border: "1px solid #e2e8f0",
+  },
+  sectionHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 24,
+  },
+  sectionIcon: {
+    fontSize: 28,
+    marginTop: 2,
+  },
+  sectionTitle: {
+    margin: "0 0 4px 0",
+    color: "#1e293b",
+    fontSize: 20,
+    fontWeight: 700,
+  },
+  sectionHint: {
+    margin: 0,
+    color: "#64748b",
+    fontSize: 14,
+    fontWeight: 400,
+  },
+  recordControls: {
+    display: "flex",
+    gap: 12,
+    flexWrap: "wrap",
+    marginBottom: 16,
+  },
+  btnDisabled: {
+    opacity: 0.5,
+    cursor: "not-allowed",
+  },
+  recordBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "14px 24px",
+    borderRadius: 12,
+    border: "none",
+    background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+    color: "#ffffff",
+    cursor: "pointer",
+    fontSize: 15,
+    fontWeight: 600,
+    transition: "all 0.2s ease",
+    boxShadow: "0 4px 12px rgba(16, 185, 129, 0.3)",
   },
   stopBtn: {
-    padding: "12px 20px",
-    borderRadius: 8,
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "14px 24px",
+    borderRadius: 12,
     border: "none",
-    background: "#e94560",
-    color: "#fff",
+    background: "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)",
+    color: "#ffffff",
     cursor: "pointer",
-    fontSize: 14,
+    fontSize: 15,
+    fontWeight: 600,
+    transition: "all 0.2s ease",
+    boxShadow: "0 4px 12px rgba(239, 68, 68, 0.3)",
+  },
+  recordingIndicator: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "12px 16px",
+    background: "linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)",
+    border: "1px solid #fecaca",
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  recordingDot: {
+    width: 12,
+    height: 12,
+    borderRadius: "50%",
+    background: "#ef4444",
   },
   recLabel: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: 600,
-    color: "#e94560",
+    color: "#991b1b",
     fontFamily: "monospace",
   },
-  uploading: { color: "#4ecca3", fontSize: 14, marginTop: 8 },
-  status: { marginTop: 16, fontSize: 14 },
+  uploadingCard: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "12px 16px",
+    background: "#f0fdf4",
+    border: "1px solid #bbf7d0",
+    borderRadius: 12,
+    color: "#166534",
+    fontSize: 14,
+    fontWeight: 500,
+    marginBottom: 12,
+  },
+  spinner: {
+    width: 18,
+    height: 18,
+    border: "3px solid rgba(255,255,255,0.3)",
+    borderTopColor: "#ffffff",
+    borderRadius: "50%",
+    animation: "spin 0.8s linear infinite",
+    display: "inline-block",
+  },
+  spinnerGreen: {
+    width: 18,
+    height: 18,
+    border: "3px solid rgba(34, 197, 94, 0.3)",
+    borderTopColor: "#22c55e",
+    borderRadius: "50%",
+    animation: "spin 0.8s linear infinite",
+    display: "inline-block",
+  },
+  statusCard: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    padding: "14px 18px",
+    borderRadius: 12,
+    fontSize: 14,
+    fontWeight: 500,
+    marginTop: 8,
+  },
+  statusError: {
+    background: "#fef2f2",
+    border: "1px solid #fecaca",
+    color: "#991b1b",
+  },
+  statusSuccess: {
+    background: "#f0fdf4",
+    border: "1px solid #bbf7d0",
+    color: "#166534",
+  },
+  statusIcon: {
+    fontSize: 18,
+  },
 };

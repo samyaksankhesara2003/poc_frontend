@@ -390,8 +390,12 @@ export default function Conversation() {
       .then((res) => {
         if (!cancelled && res.data?.data) setTables(res.data.data);
       })
-      .catch(() => {
-        if (!cancelled) setError("Failed to load tables");
+      .catch((err) => {
+        if (!cancelled) {
+          console.error("Failed to load tables:", err);
+          const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Failed to load tables";
+          setError(`API Error: ${errorMsg}`);
+        }
       })
       .finally(() => {
         if (!cancelled) setLoadingTables(false);
@@ -560,7 +564,9 @@ export default function Conversation() {
         content_analysis: contentHistoryRef.current,
       });
     } catch (err) {
-      console.error("Failed to save analysis:", err.message);
+      console.error("Failed to save analysis:", err);
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Failed to save analysis";
+      setError(`API Error: ${errorMsg}`);
     }
   }, []);
 
@@ -618,7 +624,19 @@ export default function Conversation() {
       const ws = new WebSocket(getSessionWsUrl(language));
       wsRef.current = ws;
 
+      // Set connection timeout (10 seconds)
+      const connectionTimeout = setTimeout(() => {
+        if (ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+          setError("WebSocket Error: Connection timeout. Please check your network connection and backend status.");
+          setIsRecording(false);
+          setConnectingAudio(false);
+          reject(new Error("WebSocket connection timeout"));
+        }
+      }, 10000);
+
       ws.onopen = async () => {
+        clearTimeout(connectionTimeout);
         try {
           setConnectingAudio(true);
           await new Promise((r) => setTimeout(r, MIC_START_DELAY_MS));
@@ -639,10 +657,14 @@ export default function Conversation() {
           await recorder.startRecording({ audioContext });
           resolve();
         } catch (err) {
-          setError(err?.message || "Failed to start recording");
+          console.error("Recording start error:", err);
+          const errorMsg = err?.message || err?.name || "Failed to start recording";
+          setError(`Recording Error: ${errorMsg}. Please check microphone permissions.`);
           setIsRecording(false);
           setConnectingAudio(false);
-          ws.close();
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.close();
+          }
           reject(err);
         }
       };
@@ -651,17 +673,56 @@ export default function Conversation() {
         try {
           const data = JSON.parse(event.data);
           if (data.message === "Error") {
-            setError(data.reason || data.type || "Speechmatics error");
+            const errorMsg = data.reason || data.type || data.error || "Speechmatics error";
+            setError(`WebSocket Error: ${errorMsg}`);
+            setIsRecording(false);
+            setConnectingAudio(false);
             return;
           }
           if (data.message === "PrimingStarted") setIsPriming(true);
           if (data.message === "PrimingComplete") setIsPriming(false);
           handleReceiveMessage(data);
-        } catch (_) { }
+        } catch (parseError) {
+          // Handle JSON parsing errors
+          console.error("Failed to parse WebSocket message:", parseError);
+          setError(`WebSocket Error: Invalid message format - ${parseError.message}`);
+        }
       };
 
-      ws.onerror = () => setError("WebSocket error. Is the backend running?");
-      ws.onclose = () => setConnectingAudio(false);
+      ws.onerror = (error) => {
+        clearTimeout(connectionTimeout);
+        console.error("WebSocket error:", error);
+        setError("WebSocket Error: Connection failed. Please check if the backend is running and try again.");
+        setIsRecording(false);
+        setConnectingAudio(false);
+        reject(error);
+      };
+
+      ws.onclose = (event) => {
+        clearTimeout(connectionTimeout);
+        setConnectingAudio(false);
+        // Handle different close codes
+        if (event.code !== 1000 && event.code !== 1001) {
+          // Not a normal closure
+          let errorMessage = "WebSocket connection closed unexpectedly.";
+          if (event.code === 1006) {
+            errorMessage = "WebSocket Error: Connection closed abnormally. Backend may be unreachable or network issue occurred.";
+          } else if (event.code === 1002) {
+            errorMessage = "WebSocket Error: Protocol error occurred. Please check backend compatibility.";
+          } else if (event.code === 1003) {
+            errorMessage = "WebSocket Error: Invalid data received from backend.";
+          } else if (event.code >= 1004 && event.code <= 1006) {
+            errorMessage = `WebSocket Error: Connection closed (code: ${event.code}). Check backend status.`;
+          } else if (event.code >= 1007 && event.code <= 1015) {
+            errorMessage = `WebSocket Error: Connection terminated (code: ${event.code}). ${event.reason || 'Check backend logs for details.'}`;
+          }
+          setError(errorMessage);
+          setIsRecording(false);
+          if (event.code !== 1000) {
+            reject(new Error(errorMessage));
+          }
+        }
+      };
     });
   }, [
     selectedTableId,
@@ -715,7 +776,9 @@ export default function Conversation() {
         });
         if (data?.audio_path) audio_path = data.audio_path;
       } catch (err) {
-        setError(err.response?.data?.error || err.message || "Failed to upload audio");
+        console.error("Upload audio error (stop):", err);
+        const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Failed to upload audio";
+        setError(`API Error: ${errorMsg}`);
         return;
       }
     }
@@ -736,7 +799,9 @@ export default function Conversation() {
       });
       await saveAnalysis(unique_session_id);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || "Failed to save session");
+      console.error("Save session error:", err);
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Failed to save session";
+      setError(`API Error: ${errorMsg}`);
     }
   }, [user, selectedTableSession, payloadTranscribe, saveAnalysis]);
 
@@ -775,7 +840,9 @@ export default function Conversation() {
         });
         if (data?.audio_path) audio_path = data.audio_path;
       } catch (err) {
-        setError(err.response?.data?.error || err.message || "Failed to upload audio");
+        console.error("Upload audio error (end):", err);
+        const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Failed to upload audio";
+        setError(`API Error: ${errorMsg}`);
         return;
       }
     }
@@ -796,7 +863,9 @@ export default function Conversation() {
       });
       await saveAnalysis(unique_session_id);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || "Failed to end session");
+      console.error("End session error:", err);
+      const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Failed to end session";
+      setError(`API Error: ${errorMsg}`);
       return;
     }
 
@@ -805,6 +874,22 @@ export default function Conversation() {
     setToneAnalysis(null);
     setContentAnalysis(null);
   }, [user, selectedTableSession, payloadTranscribe, saveAnalysis]);
+
+  const handleLogout = useCallback(() => {
+    // Stop any active recording before logging out
+    if (isRecording && recorderRef.current) {
+      recorderRef.current.stopRecording();
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    
+    localStorage.removeItem(POC_USER_KEY);
+    navigate("/", { replace: true });
+  }, [navigate, isRecording]);
 
   const handleSelectTable = useCallback(
     async (tableId) => {
@@ -851,11 +936,8 @@ export default function Conversation() {
         );
       } catch (err) {
         console.error("Failed to load previous conversation:", err);
-        setError(
-          err.response?.data?.error ||
-            err.message ||
-            "Failed to load previous conversation"
-        );
+        const errorMsg = err.response?.data?.error || err.response?.data?.message || err.message || "Failed to load previous conversation";
+        setError(`API Error: ${errorMsg}`);
         setTranscript([]);
         setPayloadTranscribe([]);
       }
@@ -869,21 +951,103 @@ export default function Conversation() {
   if (!user) return null;  
   return (
     <div style={pageContainer}>
-      <style>{`@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.4 } }`}</style>
-      {/* ── Left column: Transcript ── */}
-      <div style={mainColumn}>
-        <h2 style={{ margin: "0 0 4px 0" }}>Conversation by table</h2>
-        <p style={{ fontSize: 13, color: "#666", marginBottom: 14, marginTop: 0 }}>
-          Select a table, then Start recording. Stop = pause, End = close session.
-        </p>
+      <style>{`
+        @keyframes pulse { 
+          0%, 100% { opacity: 1 } 
+          50% { opacity: 0.4 } 
+        }
+        @keyframes slideIn {
+          from { opacity: 0; transform: translateY(10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        button:hover:not(:disabled) {
+          transform: translateY(-2px);
+          box-shadow: 0 6px 12px -2px rgba(0,0,0,0.2) !important;
+        }
+        button:active:not(:disabled) {
+          transform: translateY(0);
+        }
+        .table-card:hover:not(.locked) {
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .toggle-btn:hover {
+          background: #f1f5f9 !important;
+          border-color: #cbd5e1 !important;
+        }
+        .logout-btn:hover {
+          background: #f8fafc !important;
+          border-color: #cbd5e1 !important;
+          transform: translateY(-2px);
+        }
+        .error-dismiss-btn:hover {
+          opacity: 1 !important;
+          background: rgba(153, 27, 27, 0.1) !important;
+        }
+      `}</style>
+      
+      {/* ── Header Section ── */}
+      <div style={headerSection}>
+        <div>
+          <h1 style={mainTitle}>Conversation Manager</h1>
+          <p style={subtitle}>Real-time transcription and AI-powered analysis</p>
+        </div>
+        {user && (
+          <div style={userInfoContainer}>
+            <div style={userInfo}>
+              <div style={userAvatar}>{user.email?.[0]?.toUpperCase() || "U"}</div>
+              <span style={userEmail}>{user.email}</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="logout-btn"
+              style={logoutButton}
+              title="Logout"
+            >
+              <span>🚪</span>
+              <span>Logout</span>
+            </button>
+          </div>
+        )}
+      </div>
 
-        {error && <div style={errorStyle}>{error}</div>}
+      {/* ── Main Content Grid ── */}
+      <div style={contentGrid}>
+        {/* ── Left column: Transcript ── */}
+        <div style={mainColumn}>
+        {/* Tables Section */}
+        {error && (
+          <div style={errorCard}>
+            <span style={errorIcon}>⚠️</span>
+            <span style={{ flex: 1 }}>{error}</span>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="error-dismiss-btn"
+              style={errorDismissButton}
+              title="Dismiss error"
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {loadingTables ? (
-          <p>Loading tables...</p>
+          <div style={loadingCard}>
+            <div style={loadingSpinner}></div>
+            <span>Loading tables...</span>
+          </div>
         ) : (
           <div style={tablesBox}>
-            <div style={tablesTitle}>Tables</div>
+            <div style={tablesTitle}>
+              <span style={sectionIcon}>🍽️</span>
+              <span>Select Table</span>
+            </div>
             <div style={tablesGrid}>
               {tables.map((t) => {
                 const session = sessions.find((s) => s.tableId === t.id);
@@ -892,6 +1056,7 @@ export default function Conversation() {
                 return (
                   <div
                     key={t.id}
+                    className={isLocked ? "table-card locked" : "table-card"}
                     style={{
                       ...tableCard,
                       ...(isSelected ? tableCardSelected : {}),
@@ -900,7 +1065,10 @@ export default function Conversation() {
                     onClick={() => handleSelectTable(t.id)}
                     title={isLocked ? "Pause or end the active session to switch table" : undefined}
                   >
-                    <span style={tableNumber}>Table {t.table_number}</span>
+                    <div style={tableCardContent}>
+                      <span style={tableIcon}>🪑</span>
+                      <span style={tableNumber}>Table {t.table_number}</span>
+                    </div>
                     {session && (
                       <span style={statusBadge(session.status)}>{session.status}</span>
                     )}
@@ -911,130 +1079,179 @@ export default function Conversation() {
           </div>
         )}
 
+        {/* Controls Section */}
         {selectedTableId && (
-          <div style={controlsRow}>
-            <button
-              type="button"
-              onClick={startRecording}
-              disabled={!canStart}
-              style={{ ...startButton, ...(!canStart ? btnDisabled : {}) }}
-            >
-              Start recording
-            </button>
-            <button
-              type="button"
-              onClick={stopRecording}
-              disabled={!canStop}
-              style={{ ...stopButton, ...(!canStop ? btnDisabled : {}) }}
-            >
-              Stop recording
-            </button>
-            <button
-              type="button"
-              onClick={endSession}
-              disabled={!canEnd}
-              style={{ ...endButton, ...(!canEnd ? btnDisabled : {}) }}
-            >
-              End session
-            </button>
-            <select
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-              disabled={isRecording}
-              style={{
-                padding: "8px 12px",
-                borderRadius: 6,
-                border: "1px solid #ddd",
-                fontSize: 13,
-                fontWeight: 500,
-                background: "#fff",
-                cursor: isRecording ? "not-allowed" : "pointer",
-                opacity: isRecording ? 0.6 : 1,
-              }}
-            >
-              <option value="en">English</option>
-              <option value="es">Español</option>
-            </select>
-            <button
-              type="button"
-              onClick={() => setShowAnalysis((v) => !v)}
-              style={toggleAnalysisBtn}
-            >
-              {showAnalysis ? "Hide" : "Show"} Analysis
-            </button>
+          <div style={controlsCard}>
+            <div style={controlsRow}>
+              <button
+                type="button"
+                onClick={startRecording}
+                disabled={!canStart}
+                style={{ ...startButton, ...(!canStart ? btnDisabled : {}) }}
+              >
+                <span style={buttonIcon}>🎤</span>
+                <span>Start Recording</span>
+              </button>
+              <button
+                type="button"
+                onClick={stopRecording}
+                disabled={!canStop}
+                style={{ ...stopButton, ...(!canStop ? btnDisabled : {}) }}
+              >
+                <span style={buttonIcon}>⏸️</span>
+                <span>Pause</span>
+              </button>
+              <button
+                type="button"
+                onClick={endSession}
+                disabled={!canEnd}
+                style={{ ...endButton, ...(!canEnd ? btnDisabled : {}) }}
+              >
+                <span style={buttonIcon}>✓</span>
+                <span>End Session</span>
+              </button>
+            </div>
+            <div style={controlsRowSecondary}>
+              <div style={languageSelector}>
+                <span style={selectorLabel}>🌐 Language:</span>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  disabled={isRecording}
+                  style={languageSelect}
+                >
+                  <option value="en">English</option>
+                  <option value="es">Español</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAnalysis((v) => !v)}
+                className="toggle-btn"
+                style={toggleAnalysisBtn}
+              >
+                <span>{showAnalysis ? "👁️" : "👁️‍🗨️"}</span>
+                <span>{showAnalysis ? "Hide" : "Show"} Analysis</span>
+              </button>
+            </div>
           </div>
         )}
 
+        {/* Transcript Section */}
         <div style={transcriptSection}>
           <div style={transcriptHeader}>
-            <span>Live Conversation</span>
-            <span>{displayTranscript.length} segments</span>
+            <div style={transcriptHeaderLeft}>
+              <span style={sectionIcon}>💬</span>
+              <span style={transcriptTitle}>Live Conversation</span>
+            </div>
+            <div style={transcriptStats}>
+              <span style={statBadge}>{displayTranscript.length}</span>
+              <span style={statLabel}>segments</span>
+            </div>
           </div>
           <div style={transcriptBox}>
-            <div style={transcriptHint}>
-              {selectedTableSession?.status === "active" &&
-                (connectingAudio
-                  ? "Connecting..."
-                  : isPriming
-                    ? "Identifying waiter voice..."
-                    : "Recording...")}
-              {selectedTableSession?.status === "stop" && "Session paused. Start recording to continue."}
-              {!selectedTableSession && selectedTableId && "Select a table and start recording."}
-            </div>
-            {displayTranscript.length === 0 ? (
-              <div style={emptyTranscript}>No conversation yet.</div>
-            ) : (
-              displayTranscript.map((t, i) => {
-                const speakerNum = t.speaker === "S1" ? "WAITER" : "CUSTOMER";
-                const isSpeaker1 = t.speaker === "S1";
-                const tone = t.tone;
-                const toneKey = tone?.tone;
-                const toneCfg = toneKey ? (TONE_CONFIG[toneKey] || TONE_CONFIG.neutral_casual) : null;
-                const isLast = i === displayTranscript.length - 1;
+            {selectedTableSession?.status === "active" && (
+              <div style={recordingIndicator}>
+                <span style={recordingDot}></span>
+                <span>
+                  {connectingAudio
+                    ? "Connecting audio..."
+                    : isPriming
+                      ? "Identifying waiter voice..."
+                      : "Recording in progress..."}
+                </span>
+              </div>
+            )}
+            {selectedTableSession?.status === "stop" && (
+              <div style={pausedIndicator}>
+                <span>⏸️</span>
+                <span>Session paused. Start recording to continue.</span>
+              </div>
+            )}
+            {!selectedTableSession && selectedTableId && (
+              <div style={emptyState}>
+                <span style={emptyStateIcon}>🎙️</span>
+                <span style={emptyStateText}>Ready to record</span>
+                <span style={emptyStateSubtext}>Select a table and start recording to begin</span>
+              </div>
+            )}
+            {displayTranscript.length === 0 && selectedTableSession && (
+              <div style={emptyTranscript}>
+                <span style={emptyStateIcon}>📝</span>
+                <span>No conversation yet. Start speaking to see the transcript here.</span>
+              </div>
+            )}
+            {displayTranscript.length > 0 && (
+              <div style={transcriptMessages}>
+                {displayTranscript.map((t, i) => {
+                  const speakerNum = t.speaker === "S1" ? "WAITER" : "CUSTOMER";
+                  const isSpeaker1 = t.speaker === "S1";
+                  const tone = t.tone;
+                  const toneKey = tone?.tone;
+                  const toneCfg = toneKey ? (TONE_CONFIG[toneKey] || TONE_CONFIG.neutral_casual) : null;
+                  const isLast = i === displayTranscript.length - 1;
+                  
+                  // Use stable key based on content to help React optimize
+                  const messageKey = `${t.speaker}-${i}-${t.text?.substring(0, 20) || ''}`;
 
-                return (
-                  <div key={i} style={transcriptSegment}>
-                    <div style={segmentHeader}>
-                      <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
-                      {toneCfg && (
-                        <span style={{ ...inlineToneBadge, background: toneCfg.bg, color: toneCfg.color, borderColor: toneCfg.color }}>
-                          <span>{toneCfg.icon}</span>
-                          <span>{toneCfg.label}</span>
-                        </span>
-                      )}
-                      {isLast && isRecording && (
-                        <span style={liveIndicator}>LIVE</span>
-                      )}
+                  return (
+                    <div 
+                      key={messageKey} 
+                      style={{
+                        ...transcriptMessage,
+                        ...(isSpeaker1 ? messageWaiter : messageCustomer),
+                        animation: isLast ? "slideIn 0.3s ease-out" : "none",
+                      }}
+                    >
+                      <div style={messageHeader}>
+                        <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
+                        {toneCfg && (
+                          <span style={{ ...inlineToneBadge, background: toneCfg.bg, color: toneCfg.color, borderColor: toneCfg.color }}>
+                            <span>{toneCfg.icon}</span>
+                            <span>{toneCfg.label}</span>
+                          </span>
+                        )}
+                        {isLast && isRecording && (
+                          <span style={liveIndicator}>LIVE</span>
+                        )}
+                      </div>
+                      <div style={messageText}>{t.text || "\u00a0"}</div>
                     </div>
-                    <div style={segmentText}>{t.text || "\u00a0"}</div>
-                  </div>
-                );
-              })
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
-      </div>
+        </div>
 
-      {/* ── Right column: Analysis Panel ── */}
-      {showAnalysis && (
-        <div style={analysisColumn}>
-          <div style={analysisPanelCard}>
+        {/* ── Right column: Analysis Panel ── */}
+        {showAnalysis && (
+          <div style={analysisColumn} className="analysis-panel">
+            <div style={analysisPanelCard}>
             <div style={analysisPanelHeader}>
-              <span style={{ fontWeight: 700, fontSize: 15 }}>Tone Analysis</span>
-              <span style={{ fontSize: 11, color: "#999" }}>AI + Audio</span>
+              <div style={analysisHeaderLeft}>
+                <span style={analysisIcon}>🎭</span>
+                <span style={{ fontWeight: 700, fontSize: 16 }}>Tone Analysis</span>
+              </div>
+              <span style={analysisBadge}>AI + Audio</span>
             </div>
             <TonePanel tone={toneAnalysis} />
           </div>
 
           <div style={analysisPanelCard}>
             <div style={analysisPanelHeader}>
-              <span style={{ fontWeight: 700, fontSize: 15 }}>Content Analysis</span>
-              <span style={{ fontSize: 11, color: "#999" }}>AI / NLP</span>
+              <div style={analysisHeaderLeft}>
+                <span style={analysisIcon}>📊</span>
+                <span style={{ fontWeight: 700, fontSize: 16 }}>Content Analysis</span>
+              </div>
+              <span style={analysisBadge}>AI / NLP</span>
             </div>
             <ContentPanel content={contentAnalysis} />
           </div>
         </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -1042,248 +1259,718 @@ export default function Conversation() {
 // ── Styles ──
 
 function statusBadge(status) {
-  const colors = { active: "#4caf50", stop: "#ff9800" };
+  const colors = { 
+    active: { bg: "#10b981", color: "#fff" }, 
+    stop: { bg: "#f59e0b", color: "#fff" } 
+  };
+  const style = colors[status] || { bg: "#6b7280", color: "#fff" };
   return {
-    fontSize: 11,
-    padding: "2px 6px",
-    borderRadius: 8,
-    background: colors[status] || "#9e9e9e",
-    color: "#fff",
+    fontSize: 10,
+    padding: "4px 10px",
+    borderRadius: 12,
+    background: style.bg,
+    color: style.color,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   };
 }
 
 const pageContainer = {
   display: "flex",
-  gap: 20,
-  padding: "20px 24px",
-  fontFamily: "'Inter', 'Segoe UI', Arial, sans-serif",
-  maxWidth: 1280,
-  margin: "auto",
+  flexDirection: "column",
+  gap: 24,
+  padding: "24px",
+  fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif",
+  maxWidth: 1400,
+  margin: "0 auto",
   minHeight: "100vh",
+  background: "linear-gradient(to bottom, #f8fafc 0%, #f1f5f9 100%)",
+};
+
+const headerSection = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "20px 24px",
+  background: "#ffffff",
+  borderRadius: 16,
+  boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+  marginBottom: 8,
+};
+
+const mainTitle = {
+  margin: 0,
+  fontSize: 28,
+  fontWeight: 700,
+  color: "#1e293b",
+  background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+  WebkitBackgroundClip: "text",
+  WebkitTextFillColor: "transparent",
+  backgroundClip: "text",
+};
+
+const subtitle = {
+  margin: "4px 0 0 0",
+  fontSize: 14,
+  color: "#64748b",
+  fontWeight: 400,
+};
+
+const userInfoContainer = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+};
+
+const userInfo = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  padding: "8px 16px",
+  background: "#f1f5f9",
+  borderRadius: 12,
+};
+
+const userAvatar = {
+  width: 36,
+  height: 36,
+  borderRadius: "50%",
+  background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+  color: "#fff",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontWeight: 600,
+  fontSize: 14,
+};
+
+const userEmail = {
+  fontSize: 13,
+  color: "#475569",
+  fontWeight: 500,
+};
+
+const logoutButton = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  padding: "10px 18px",
+  borderRadius: 12,
+  border: "2px solid #e2e8f0",
+  background: "#ffffff",
+  color: "#475569",
+  cursor: "pointer",
+  fontSize: 14,
+  fontWeight: 600,
+  transition: "all 0.2s ease",
+  fontFamily: "inherit",
+};
+
+const contentGrid = {
+  display: "grid",
+  gridTemplateColumns: "1fr auto",
+  gap: 24,
   alignItems: "flex-start",
 };
-const mainColumn = { flex: "1 1 0", minWidth: 0, maxWidth: 700 };
+
+const mainColumn = { 
+  minWidth: 0, 
+  display: "flex",
+  flexDirection: "column",
+  gap: 20,
+};
+
 const analysisColumn = {
-  width: 340,
+  width: 380,
   flexShrink: 0,
   display: "flex",
   flexDirection: "column",
-  gap: 14,
+  gap: 16,
   position: "sticky",
-  top: 20,
-  maxHeight: "calc(100vh - 40px)",
+  top: 24,
+  maxHeight: "calc(100vh - 48px)",
   overflowY: "auto",
+  paddingRight: 4,
 };
+
 const analysisPanelCard = {
-  background: "#fff",
-  border: "1px solid #e0e0e0",
-  borderRadius: 10,
-  padding: 14,
-  boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
+  background: "#ffffff",
+  border: "1px solid #e2e8f0",
+  borderRadius: 16,
+  padding: 20,
+  boxShadow: "0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06)",
+  transition: "all 0.2s ease",
+  willChange: "contents",
+  contain: "layout style paint",
 };
+
 const analysisPanelHeader = {
   display: "flex",
   justifyContent: "space-between",
   alignItems: "center",
-  marginBottom: 10,
-  paddingBottom: 8,
-  borderBottom: "1px solid #f0f0f0",
+  marginBottom: 16,
+  paddingBottom: 12,
+  borderBottom: "2px solid #f1f5f9",
 };
-const panelEmpty = { color: "#aaa", fontSize: 13, fontStyle: "italic", padding: "10px 0" };
+
+const analysisHeaderLeft = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const analysisIcon = {
+  fontSize: 18,
+};
+
+const analysisBadge = {
+  fontSize: 10,
+  padding: "4px 10px",
+  borderRadius: 12,
+  background: "#e0e7ff",
+  color: "#4338ca",
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: 0.5,
+};
+
+const panelEmpty = { 
+  color: "#94a3b8", 
+  fontSize: 13, 
+  fontStyle: "italic", 
+  padding: "20px 0",
+  textAlign: "center",
+};
+
 const toneBadgeLarge = {
   display: "inline-flex",
   alignItems: "center",
   gap: 8,
-  padding: "6px 14px",
-  borderRadius: 20,
-  border: "1px solid",
+  padding: "8px 16px",
+  borderRadius: 24,
+  border: "2px solid",
   fontWeight: 600,
   fontSize: 14,
-  marginBottom: 6,
+  marginBottom: 8,
+  boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
 };
+
 const summaryBox = {
-  background: "#f5f5f5",
-  borderRadius: 8,
-  padding: "8px 10px",
-  marginBottom: 10,
+  background: "linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)",
+  borderRadius: 12,
+  padding: "12px 14px",
+  marginBottom: 12,
+  border: "1px solid #e2e8f0",
 };
-const sectionLabel = { fontSize: 11, fontWeight: 600, color: "#999", textTransform: "uppercase", marginBottom: 4, letterSpacing: 0.5 };
+
+const sectionLabel = { 
+  fontSize: 11, 
+  fontWeight: 700, 
+  color: "#64748b", 
+  textTransform: "uppercase", 
+  marginBottom: 6, 
+  letterSpacing: 1,
+};
+
 const intentBadge = {
   display: "inline-block",
-  padding: "3px 10px",
-  borderRadius: 12,
+  padding: "6px 14px",
+  borderRadius: 16,
   fontSize: 12,
   fontWeight: 600,
-  background: "#e3f2fd",
-  color: "#1565c0",
+  background: "linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)",
+  color: "#1e40af",
+  border: "1px solid #93c5fd",
 };
+
 const topicChip = {
   display: "inline-block",
-  padding: "2px 8px",
-  borderRadius: 10,
+  padding: "4px 12px",
+  borderRadius: 12,
   fontSize: 11,
-  background: "#ede7f6",
-  color: "#5e35b1",
-  fontWeight: 500,
+  background: "linear-gradient(135deg, #ede9fe 0%, #ddd6fe 100%)",
+  color: "#5b21b6",
+  fontWeight: 600,
+  border: "1px solid #c4b5fd",
 };
+
 const phraseChip = {
   display: "inline-block",
-  padding: "2px 8px",
-  borderRadius: 10,
+  padding: "4px 12px",
+  borderRadius: 12,
   fontSize: 11,
-  background: "#e8f5e9",
-  color: "#2e7d32",
-  fontWeight: 500,
+  background: "linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%)",
+  color: "#065f46",
+  fontWeight: 600,
+  border: "1px solid #6ee7b7",
 };
+
 const toxicityBadge = {
   display: "inline-block",
-  padding: "3px 10px",
-  borderRadius: 12,
+  padding: "6px 14px",
+  borderRadius: 16,
   fontSize: 12,
   fontWeight: 600,
 };
 
-const errorStyle = { color: "#c62828", marginBottom: 12, fontSize: 13 };
-const tablesBox = {
-  border: "1px solid #e0e0e0",
-  borderRadius: 8,
-  padding: 12,
-  marginBottom: 14,
-  background: "#fff",
-};
-const tablesTitle = { fontWeight: "bold", marginBottom: 8, fontSize: 14 };
-const tablesGrid = { display: "flex", flexWrap: "wrap", gap: 8 };
-const tableCard = {
-  padding: "10px 14px",
-  borderRadius: 8,
-  border: "1px solid #ddd",
-  cursor: "pointer",
-  minWidth: 90,
+const errorCard = {
   display: "flex",
   alignItems: "center",
-  justifyContent: "space-between",
-  gap: 8,
-  background: "#fff",
-  transition: "all 0.15s",
-};
-const tableCardSelected = { background: "#e3f2fd", borderColor: "#2196f3" };
-const tableCardLocked = { opacity: 0.5, cursor: "not-allowed" };
-const tableNumber = { fontWeight: 600, fontSize: 13 };
-const controlsRow = { display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" };
-const startButton = {
-  padding: "8px 18px",
-  background: "#1976d2",
-  color: "white",
-  border: "none",
-  borderRadius: 6,
-  cursor: "pointer",
-  fontSize: 13,
-  fontWeight: 600,
-};
-const stopButton = {
-  padding: "8px 18px",
-  background: "#d32f2f",
-  color: "white",
-  border: "none",
-  borderRadius: 6,
-  cursor: "pointer",
-  fontSize: 13,
-  fontWeight: 600,
-};
-const endButton = {
-  padding: "8px 18px",
-  background: "#546e7a",
-  color: "white",
-  border: "none",
-  borderRadius: 6,
-  cursor: "pointer",
-  fontSize: 13,
-  fontWeight: 600,
-};
-const toggleAnalysisBtn = {
-  padding: "8px 14px",
-  background: "#f5f5f5",
-  color: "#333",
-  border: "1px solid #ddd",
-  borderRadius: 6,
-  cursor: "pointer",
-  fontSize: 12,
+  gap: 12,
+  padding: "14px 18px",
+  background: "#fef2f2",
+  border: "2px solid #fecaca",
+  borderRadius: 12,
+  color: "#991b1b",
+  fontSize: 14,
   fontWeight: 500,
-  marginLeft: "auto",
+  marginBottom: 16,
+  boxShadow: "0 2px 8px rgba(220, 38, 38, 0.15)",
+  animation: "slideIn 0.3s ease-out",
 };
-const transcriptSection = { marginTop: 4 };
-const transcriptHeader = {
+
+const errorIcon = {
+  fontSize: 20,
+  flexShrink: 0,
+};
+
+const errorDismissButton = {
+  background: "transparent",
+  border: "none",
+  color: "#991b1b",
+  fontSize: 18,
+  fontWeight: 700,
+  cursor: "pointer",
+  padding: "0 4px",
+  borderRadius: 4,
+  lineHeight: 1,
+  opacity: 0.7,
+  transition: "all 0.2s ease",
+  flexShrink: 0,
+};
+
+const loadingCard = {
   display: "flex",
-  justifyContent: "space-between",
-  marginBottom: 6,
-  fontSize: 13,
-  color: "#777",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 12,
+  padding: "40px",
+  background: "#ffffff",
+  borderRadius: 12,
+  border: "1px solid #e2e8f0",
+  color: "#64748b",
+  fontSize: 14,
 };
-const transcriptBox = {
-  border: "1px solid #e0e0e0",
-  borderRadius: 8,
-  padding: 14,
-  minHeight: 300,
-  maxHeight: 420,
-  overflowY: "auto",
-  background: "#fafafa",
+
+const loadingSpinner = {
+  width: 20,
+  height: 20,
+  border: "3px solid #e2e8f0",
+  borderTopColor: "#667eea",
+  borderRadius: "50%",
+  animation: "spin 1s linear infinite",
+};
+
+const tablesBox = {
+  border: "1px solid #e2e8f0",
+  borderRadius: 16,
+  padding: 20,
+  marginBottom: 0,
+  background: "#ffffff",
+  boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+};
+
+const tablesTitle = { 
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  fontWeight: 700, 
+  marginBottom: 16, 
+  fontSize: 16,
+  color: "#1e293b",
+};
+
+const sectionIcon = {
+  fontSize: 18,
+};
+
+const tablesGrid = { 
+  display: "flex", 
+  flexWrap: "wrap", 
+  gap: 12,
+};
+
+const tableCard = {
+  padding: "14px 18px",
+  borderRadius: 12,
+  border: "2px solid #e2e8f0",
+  cursor: "pointer",
+  minWidth: 120,
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  background: "#ffffff",
+  transition: "all 0.2s ease",
+  boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+};
+
+const tableCardSelected = { 
+  background: "linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%)", 
+  borderColor: "#6366f1",
+  transform: "translateY(-2px)",
+  boxShadow: "0 4px 12px rgba(99, 102, 241, 0.3)",
+};
+
+const tableCardLocked = { 
+  opacity: 0.5, 
+  cursor: "not-allowed",
+  background: "#f8fafc",
+};
+
+const tableCardContent = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const tableIcon = {
+  fontSize: 18,
+};
+
+const tableNumber = { 
+  fontWeight: 700, 
   fontSize: 15,
-  lineHeight: 1.6,
+  color: "#1e293b",
 };
-const transcriptHint = { fontSize: 12, color: "#888", marginBottom: 10 };
-const emptyTranscript = { color: "#bbb", fontStyle: "italic", fontSize: 13 };
-const transcriptSegment = {
-  marginBottom: 12,
-  padding: "8px 10px",
-  background: "#fff",
-  borderRadius: 8,
-  border: "1px solid #eee",
+
+const controlsCard = {
+  padding: "20px",
+  background: "#ffffff",
+  borderRadius: 16,
+  border: "1px solid #e2e8f0",
+  boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
 };
-const segmentHeader = {
+
+const controlsRow = { 
+  display: "flex", 
+  gap: 10, 
+  marginBottom: 12, 
+  flexWrap: "wrap",
+};
+
+const controlsRowSecondary = {
+  display: "flex",
+  gap: 12,
+  alignItems: "center",
+  justifyContent: "space-between",
+  paddingTop: 12,
+  borderTop: "1px solid #f1f5f9",
+};
+
+const buttonIcon = {
+  fontSize: 16,
+  marginRight: 6,
+};
+
+const startButton = {
+  display: "flex",
+  alignItems: "center",
+  padding: "12px 24px",
+  background: "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+  color: "white",
+  border: "none",
+  borderRadius: 12,
+  cursor: "pointer",
+  fontSize: 14,
+  fontWeight: 600,
+  boxShadow: "0 4px 6px -1px rgba(16, 185, 129, 0.3)",
+  transition: "all 0.2s ease",
+};
+
+const stopButton = {
+  display: "flex",
+  alignItems: "center",
+  padding: "12px 24px",
+  background: "linear-gradient(135deg, #f59e0b 0%, #d97706 100%)",
+  color: "white",
+  border: "none",
+  borderRadius: 12,
+  cursor: "pointer",
+  fontSize: 14,
+  fontWeight: 600,
+  boxShadow: "0 4px 6px -1px rgba(245, 158, 11, 0.3)",
+  transition: "all 0.2s ease",
+};
+
+const endButton = {
+  display: "flex",
+  alignItems: "center",
+  padding: "12px 24px",
+  background: "linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)",
+  color: "white",
+  border: "none",
+  borderRadius: 12,
+  cursor: "pointer",
+  fontSize: 14,
+  fontWeight: 600,
+  boxShadow: "0 4px 6px -1px rgba(99, 102, 241, 0.3)",
+  transition: "all 0.2s ease",
+};
+
+const languageSelector = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const selectorLabel = {
+  fontSize: 13,
+  color: "#64748b",
+  fontWeight: 500,
+};
+
+const languageSelect = {
+  padding: "8px 14px",
+  borderRadius: 10,
+  border: "1px solid #e2e8f0",
+  fontSize: 13,
+  fontWeight: 500,
+  background: "#ffffff",
+  cursor: "pointer",
+  color: "#1e293b",
+  transition: "all 0.2s ease",
+};
+
+const toggleAnalysisBtn = {
   display: "flex",
   alignItems: "center",
   gap: 6,
+  padding: "8px 16px",
+  background: "#f8fafc",
+  color: "#475569",
+  border: "1px solid #e2e8f0",
+  borderRadius: 10,
+  cursor: "pointer",
+  fontSize: 13,
+  fontWeight: 500,
+  transition: "all 0.2s ease",
+};
+
+const transcriptSection = { 
+  marginTop: 0,
+};
+
+const transcriptHeader = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: 12,
+  padding: "0 4px",
+};
+
+const transcriptHeaderLeft = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+};
+
+const transcriptTitle = {
+  fontSize: 18,
+  fontWeight: 700,
+  color: "#1e293b",
+};
+
+const transcriptStats = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const statBadge = {
+  padding: "4px 12px",
+  background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+  color: "#fff",
+  borderRadius: 12,
+  fontSize: 13,
+  fontWeight: 700,
+};
+
+const statLabel = {
+  fontSize: 12,
+  color: "#64748b",
+  fontWeight: 500,
+};
+
+const transcriptBox = {
+  border: "1px solid #e2e8f0",
+  borderRadius: 16,
+  padding: "20px",
+  minHeight: 400,
+  maxHeight: 600,
+  overflowY: "auto",
+  background: "#ffffff",
+  fontSize: 15,
+  lineHeight: 1.6,
+  boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+};
+
+const recordingIndicator = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  padding: "12px 16px",
+  background: "linear-gradient(135deg, #fef2f2 0%, #fee2e2 100%)",
+  border: "1px solid #fecaca",
+  borderRadius: 12,
+  color: "#991b1b",
+  fontSize: 13,
+  fontWeight: 600,
+  marginBottom: 16,
+};
+
+const recordingDot = {
+  width: 10,
+  height: 10,
+  borderRadius: "50%",
+  background: "#ef4444",
+  animation: "pulse 1.5s infinite",
+};
+
+const pausedIndicator = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  padding: "12px 16px",
+  background: "#fef3c7",
+  border: "1px solid #fde68a",
+  borderRadius: 12,
+  color: "#92400e",
+  fontSize: 13,
+  fontWeight: 600,
+  marginBottom: 16,
+};
+
+const emptyState = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "60px 20px",
+  textAlign: "center",
+};
+
+const emptyStateIcon = {
+  fontSize: 48,
+  marginBottom: 12,
+  opacity: 0.5,
+};
+
+const emptyStateText = {
+  fontSize: 16,
+  fontWeight: 600,
+  color: "#475569",
   marginBottom: 4,
+};
+
+const emptyStateSubtext = {
+  fontSize: 13,
+  color: "#94a3b8",
+};
+
+const emptyTranscript = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "40px 20px",
+  color: "#94a3b8",
+  fontStyle: "italic",
+  fontSize: 14,
+  gap: 12,
+};
+
+const transcriptMessages = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 16,
+};
+
+const transcriptMessage = {
+  marginBottom: 0,
+  padding: "16px 18px",
+  borderRadius: 16,
+  border: "1px solid #e2e8f0",
+  transition: "all 0.2s ease",
+};
+
+const messageWaiter = {
+  background: "linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%)",
+  borderColor: "#a7f3d0",
+  marginRight: "20%",
+};
+
+const messageCustomer = {
+  background: "linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)",
+  borderColor: "#93c5fd",
+  marginLeft: "20%",
+};
+
+const messageHeader = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  marginBottom: 8,
   flexWrap: "wrap",
 };
+
 function speakerPill(isSpeaker1) {
   return {
     display: "inline-block",
-    padding: "3px 10px",
-    borderRadius: 16,
-    fontSize: 12,
-    fontWeight: 600,
+    padding: "5px 14px",
+    borderRadius: 20,
+    fontSize: 11,
+    fontWeight: 700,
     color: "#fff",
     flexShrink: 0,
-    background: isSpeaker1 ? "#66bb6a" : "#42a5f5",
+    background: isSpeaker1 
+      ? "linear-gradient(135deg, #10b981 0%, #059669 100%)"
+      : "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
   };
 }
+
 const inlineToneBadge = {
   display: "inline-flex",
   alignItems: "center",
-  gap: 3,
-  padding: "2px 8px",
-  borderRadius: 12,
+  gap: 4,
+  padding: "4px 10px",
+  borderRadius: 14,
   border: "1px solid",
-  fontSize: 11,
+  fontSize: 10,
   fontWeight: 600,
   textTransform: "capitalize",
 };
+
 const liveIndicator = {
   display: "inline-block",
-  padding: "1px 6px",
-  borderRadius: 8,
+  padding: "3px 8px",
+  borderRadius: 10,
   fontSize: 9,
   fontWeight: 700,
   color: "#fff",
-  background: "#e53935",
+  background: "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)",
   letterSpacing: 1,
   marginLeft: "auto",
   animation: "pulse 1.5s infinite",
+  boxShadow: "0 2px 4px rgba(239, 68, 68, 0.4)",
 };
-const segmentText = {
-  fontSize: 14,
-  lineHeight: 1.5,
-  color: "#333",
+
+const messageText = {
+  fontSize: 15,
+  lineHeight: 1.6,
+  color: "#1e293b",
   paddingLeft: 2,
 };

@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:dev": "vite build --mode development",
+    "deploy:dev": "rsync -avz --progress -e \"ssh -i /home/sandeep/Documents/Pem/dev91025.pem\" dist/* ubuntu@98.86.9.131:/var/www/servesense-web/dist/"
   },
   "dependencies": {
     "@speechmatics/auth": "^0.1.0",
