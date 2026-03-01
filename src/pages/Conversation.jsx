@@ -3,13 +3,20 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { PCMRecorder } from "@speechmatics/browser-audio-input";
 import workletUrl from "@speechmatics/browser-audio-input/pcm-audio-worklet.min.js?url";
+import TranscriptWithPartial from "../components/TranscriptWithPartial.jsx";
 
 const WORKLET_URL = workletUrl;
 const RECORDING_SAMPLE_RATE = 16000;
 const MIC_START_DELAY_MS = 1800;
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
+
+// Which STT engine: "speechmatics" | "soniox". Backend routes by path.
+const WS_ENGINE = import.meta.env.VITE_WS_ENGINE || "soniox";
+const WS_HOST = import.meta.env.VITE_WS_HOST || "localhost:3000";
+const WS_PROTOCOL = import.meta.env.VITE_WS_PROTOCOL || "ws";
 const WS_BASE =
-  import.meta.env.VITE_WS_SESSION_URL || "ws://localhost:3000/session-backend";
+  import.meta.env.VITE_WS_SESSION_URL ||
+  `${WS_PROTOCOL}://${WS_HOST}${WS_ENGINE === "soniox" ? "/session-soniox" : "/session-backend"}`;
 const POC_USER_KEY = "poc_user";
 
 function getSessionWsUrl() {
@@ -25,6 +32,7 @@ function getSessionWsUrl() {
   }
 }
 
+// helper used to trim overlapping words between segments
 function removeOverlap(prevText, newText) {
   const prev = prevText.trim().split(" ");
   const next = newText.trim().split(" ");
@@ -38,16 +46,16 @@ function removeOverlap(prevText, newText) {
   return next.slice(overlapLength).join(" ");
 }
 
-function isPunctuationOnly(s) {
-  return /^[.,!?;:'"\s]+$/.test((s || "").trim());
-}
+// helper removed; we no longer base segmentation on punctuation
+// function isPunctuationOnly(s) {
+//   return /^[.,!?;:'"\s]+$/.test((s || "").trim());
+// }
 
+// we no longer split sentences at render time; the raw segment text is shown as-is
 function splitSentences(text) {
+  // kept for compatibility but returns the whole text
   if (!text || !String(text).trim()) return [];
-  return String(text)
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  return [String(text)];
 }
 
 function convertFloatTo16BitPCM(input) {
@@ -103,6 +111,7 @@ export default function Conversation() {
   const [sessions, setSessions] = useState([]);
 
   const [transcript, setTranscript] = useState([]);
+  const [partialSegment, setPartialSegment] = useState(null); // { speaker, text } – provisional (lighter)
   const [payloadTranscribe, setPayloadTranscribe] = useState([]); // Backend-ready state
 
   const [isRecording, setIsRecording] = useState(false);
@@ -161,9 +170,29 @@ export default function Conversation() {
   }
 
   const handleReceiveMessage = useCallback((data) => {
+    if (data.message === "PartialTranscript") {
+      const results = data.results;
+      if (!results?.length) return;
+      const parts = [];
+      let speaker = "S1";
+      for (const r of results) {
+        const content = r.alternatives?.[0]?.content;
+        const sp = r.alternatives?.[0]?.speaker || "S1";
+        if (content != null) {
+          parts.push(content);
+          speaker = sp;
+        }
+      }
+      if (parts.length > 0) {
+        setPartialSegment({ speaker, text: parts.join("").trim() });
+      }
+      return;
+    }
+
     if (data.message !== "AddTranscript") return;
     const results = data.results;
     if (!results?.length) return;
+    setPartialSegment(null);
 
     const segments = [];
     for (const r of results) {
@@ -172,7 +201,10 @@ export default function Conversation() {
       if (content == null) continue;
       if (segments.length > 0 && segments[segments.length - 1].speaker === speaker) {
         const last = segments[segments.length - 1];
-        last.text += isPunctuationOnly(content) ? content : (last.text ? " " : "") + content;
+        const clean = removeOverlap(last.text, content);
+        if (clean) {
+          last.text += (last.text ? " " : "") + clean;
+        }
       } else {
         segments.push({ speaker, text: content });
       }
@@ -180,16 +212,13 @@ export default function Conversation() {
     if (segments.length === 0) return;
 
     setTranscript((prev) => {
-      let next = [...prev];
+      const next = [...prev];
       for (const seg of segments) {
         const last = next[next.length - 1];
         if (last && last.speaker === seg.speaker) {
-          const cleanPart = removeOverlap(last.text, seg.text);
-          if (cleanPart) {
-            next[next.length - 1] = {
-              ...last,
-              text: last.text + (isPunctuationOnly(cleanPart) ? "" : " ") + cleanPart,
-            };
+          const clean = removeOverlap(last.text, seg.text);
+          if (clean) {
+            last.text += (last.text ? " " : "") + clean;
           }
         } else {
           next.push({ speaker: seg.speaker, text: seg.text });
@@ -199,23 +228,20 @@ export default function Conversation() {
     });
     setPayloadTranscribe((prev) => {
       const next = [...prev];
-
       for (const seg of segments) {
         const role = resolveRole(seg.speaker);
-
         const last = next[next.length - 1];
         if (last && last.role === role) {
-          last.text += isPunctuationOnly(seg.text)
-            ? seg.text
-            : (last.text ? " " : "") + seg.text;
+          const clean = removeOverlap(last.text, seg.text);
+          if (clean) {
+            last.text += (last.text ? " " : "") + clean;
+          }
         } else {
           next.push({ role, text: seg.text });
         }
       }
-
       return next;
     });
-
   }, []);
 
   const startRecording = useCallback(async () => {
@@ -225,6 +251,7 @@ export default function Conversation() {
 
     setError(null);
     setTranscript([]);
+    setPartialSegment(null);
     setPayloadTranscribe([]);
     pcmChunksRef.current = [];
 
@@ -528,41 +555,24 @@ export default function Conversation() {
           <span>Speaker</span>
           <span>Conversation</span>
         </div>
-        <div style={transcriptBox}>
-          <div style={transcriptHint}>
-            {selectedTableSession?.status === "active" &&
-              (connectingAudio
+        <TranscriptWithPartial
+          transcript={displayTranscript}
+          partial={partialSegment}
+          hint={
+            selectedTableSession?.status === "active"
+              ? connectingAudio
                 ? "Connecting…"
                 : isPriming
                   ? "🎙 Identifying waiter voice…"
-                  : "Recording…")}
-            {selectedTableSession?.status === "stop" && "Session paused. Start recording to continue."}
-            {!selectedTableSession && selectedTableId && "Select a table and start recording."}
-          </div>
-          {displayTranscript.length === 0 ? (
-            <div style={emptyTranscript}>No conversation yet.</div>
-          ) : (
-            displayTranscript.flatMap((t, i) => {
-              const sentences = splitSentences(t.text);
-              const speakerNum = t.speaker === "S1" ? "WAITER" : "CUSTOMER";
-              const isSpeaker1 = t.speaker === "S1";
-              if (sentences.length === 0) {
-                return (
-                  <div key={`${i}-0`} style={transcriptLine}>
-                    <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
-                    <span style={transcriptLineText}>{t.text || "\u00a0"}</span>
-                  </div>
-                );
-              }
-              return sentences.map((sent, j) => (
-                <div key={`${i}-${j}`} style={transcriptLine}>
-                  <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
-                  <span style={transcriptLineText}>{sent}</span>
-                </div>
-              ));
-            })
-          )}
-        </div>
+                  : "Recording…"
+              : selectedTableSession?.status === "stop"
+                ? "Session paused. Start recording to continue."
+                : !selectedTableSession && selectedTableId
+                  ? "Select a table and start recording."
+                  : null
+          }
+          emptyMessage="No conversation yet."
+        />
       </div>
     </div>
   );
