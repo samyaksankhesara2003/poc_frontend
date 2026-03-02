@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import { PCMRecorder } from "@speechmatics/browser-audio-input";
-import workletUrl from "@speechmatics/browser-audio-input/pcm-audio-worklet.min.js?url";
 import TranscriptWithPartial from "../components/TranscriptWithPartial.jsx";
 
-const WORKLET_URL = workletUrl;
-const RECORDING_SAMPLE_RATE = 16000;
 const MIC_START_DELAY_MS = 1800;
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
@@ -46,11 +42,6 @@ function removeOverlap(prevText, newText) {
   return next.slice(overlapLength).join(" ");
 }
 
-// helper removed; we no longer base segmentation on punctuation
-// function isPunctuationOnly(s) {
-//   return /^[.,!?;:'"\s]+$/.test((s || "").trim());
-// }
-
 // we no longer split sentences at render time; the raw segment text is shown as-is
 function splitSentences(text) {
   // kept for compatibility but returns the whole text
@@ -58,52 +49,29 @@ function splitSentences(text) {
   return [String(text)];
 }
 
-function convertFloatTo16BitPCM(input) {
-  const buffer = new ArrayBuffer(input.length * 2);
-  const view = new DataView(buffer);
-  let offset = 0;
-  for (let i = 0; i < input.length; i++, offset += 2) {
-    const s = Math.max(-1, Math.min(1, input[i]));
-    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+/**
+ * Determine the best supported MIME type for MediaRecorder.
+ */
+function getPreferredMime() {
+  const candidates = [
+    { mimeType: "audio/webm;codecs=opus", ext: ".webm" },
+    { mimeType: "audio/webm", ext: ".webm" },
+    { mimeType: "audio/ogg;codecs=opus", ext: ".ogg" },
+    { mimeType: "audio/mp4", ext: ".mp4" },
+  ];
+  for (const c of candidates) {
+    if (MediaRecorder.isTypeSupported(c.mimeType)) return c;
   }
-  return buffer;
-}
-
-function buildWavBlob(pcmChunks, sampleRate = 16000) {
-  const totalLength = pcmChunks.reduce((acc, buf) => acc + buf.byteLength, 0);
-  const dataLength = totalLength;
-  const buffer = new ArrayBuffer(44 + dataLength);
-  const view = new DataView(buffer);
-  const writeStr = (offset, str) => {
-    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-  };
-  writeStr(0, "RIFF");
-  view.setUint32(4, 36 + dataLength, true);
-  writeStr(8, "WAVE");
-  writeStr(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, "data");
-  view.setUint32(40, dataLength, true);
-  let offset = 44;
-  for (const chunk of pcmChunks) {
-    new Uint8Array(buffer).set(new Uint8Array(chunk), offset);
-    offset += chunk.byteLength;
-  }
-  return new Blob([buffer], { type: "audio/wav" });
+  return { mimeType: "", ext: ".webm" };
 }
 
 export default function Conversation() {
   const navigate = useNavigate();
   const wsRef = useRef(null);
   const recorderRef = useRef(null);
-  const audioContextRef = useRef(null);
-  const pcmChunksRef = useRef([]);
+  const streamRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const mimeInfoRef = useRef(null);
 
   const [user, setUser] = useState(null);
   const [tables, setTables] = useState([]);
@@ -253,7 +221,7 @@ export default function Conversation() {
     setTranscript([]);
     setPartialSegment(null);
     setPayloadTranscribe([]);
-    pcmChunksRef.current = [];
+    recordedChunksRef.current = [];
 
     const existingStopped = sessions.find(
       (s) => s.tableId === selectedTableId && s.status === "stop"
@@ -295,18 +263,32 @@ export default function Conversation() {
           setConnectingAudio(false);
           if (wsRef.current?.readyState !== WebSocket.OPEN) return;
 
-          const audioContext = new AudioContext({ sampleRate: RECORDING_SAMPLE_RATE });
-          audioContextRef.current = audioContext;
-          const recorder = new PCMRecorder(WORKLET_URL);
+          const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          streamRef.current = micStream;
+
+          const mimeInfo = getPreferredMime();
+          mimeInfoRef.current = mimeInfo;
+
+          const options = mimeInfo.mimeType ? { mimeType: mimeInfo.mimeType } : {};
+          const recorder = new MediaRecorder(micStream, options);
           recorderRef.current = recorder;
 
-          recorder.addEventListener("audio", (e) => {
-            const pcm = convertFloatTo16BitPCM(e.data);
-            pcmChunksRef.current.push(pcm);
-            if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(pcm);
-          });
+          recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) {
+              recordedChunksRef.current.push(e.data);
+              // Stream chunk to WebSocket as binary
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                e.data.arrayBuffer().then((buf) => {
+                  if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    wsRef.current.send(buf);
+                  }
+                });
+              }
+            }
+          };
 
-          await recorder.startRecording({ audioContext });
+          // Use timeslice to get frequent chunks for real-time streaming
+          recorder.start(250);
           resolve();
         } catch (err) {
           setError(err?.message || "Failed to start recording");
@@ -321,7 +303,7 @@ export default function Conversation() {
         try {
           const data = JSON.parse(event.data);
           if (data.message === "Error") {
-            setError(data.reason || data.type || "Speechmatics error");
+            setError(data.reason || data.type || "Soniox error");
             return;
           }
           if (data.message === "PrimingStarted") setIsPriming(true);
@@ -342,18 +324,19 @@ export default function Conversation() {
     handleReceiveMessage,
   ]);
 
-  const stopRecording = useCallback(async () => {
-    if (!user || !selectedTableSession || selectedTableSession.status !== "active") return;
-
-    const unique_session_id = selectedTableSession.unique_session_id;
-
-    if (recorderRef.current) {
-      recorderRef.current.stopRecording();
-      recorderRef.current = null;
+  /** Stop the MediaRecorder and mic stream; close WebSocket. */
+  const cleanupRecording = useCallback(async () => {
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      await new Promise((resolve) => {
+        recorderRef.current.onstop = resolve;
+        recorderRef.current.stop();
+      });
     }
-    if (audioContextRef.current) {
-      await audioContextRef.current.close();
-      audioContextRef.current = null;
+    recorderRef.current = null;
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
     if (wsRef.current) {
       wsRef.current.close();
@@ -362,6 +345,31 @@ export default function Conversation() {
     setIsRecording(false);
     setConnectingAudio(false);
     setIsPriming(false);
+  }, []);
+
+  /** Upload recorded chunks as a single audio file to the backend. */
+  const uploadRecordedAudio = useCallback(async (unique_session_id) => {
+    const chunks = recordedChunksRef.current;
+    if (chunks.length === 0) return `${unique_session_id}.webm`;
+
+    const mimeInfo = mimeInfoRef.current || { ext: ".webm" };
+    const blob = new Blob(chunks, { type: chunks[0].type || "audio/webm" });
+    const file = new File([blob], `recording${mimeInfo.ext}`, { type: blob.type });
+    const form = new FormData();
+    form.append("audio", file, file.name);
+    form.append("unique_session_id", unique_session_id);
+    const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return data?.audio_path || `${unique_session_id}${mimeInfo.ext}`;
+  }, []);
+
+  const stopRecording = useCallback(async () => {
+    if (!user || !selectedTableSession || selectedTableSession.status !== "active") return;
+
+    const unique_session_id = selectedTableSession.unique_session_id;
+
+    await cleanupRecording();
 
     setSessions((prev) =>
       prev.map((s) =>
@@ -369,23 +377,12 @@ export default function Conversation() {
       )
     );
 
-    let audio_path = `${unique_session_id}.wav`;
-    const chunks = pcmChunksRef.current;
-    if (chunks.length > 0) {
-      try {
-        const wavBlob = buildWavBlob(chunks, RECORDING_SAMPLE_RATE);
-        const file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
-        const form = new FormData();
-        form.append("audio", file, file.name);
-        form.append("unique_session_id", unique_session_id);
-        const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
-          headers: { "Content-Type": "multipart/form-data" },
-        });
-        if (data?.audio_path) audio_path = data.audio_path;
-      } catch (err) {
-        setError(err.response?.data?.error || err.message || "Failed to upload audio");
-        return;
-      }
+    let audio_path = `${unique_session_id}.webm`;
+    try {
+      audio_path = await uploadRecordedAudio(unique_session_id);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || "Failed to upload audio");
+      return;
     }
 
     try {
@@ -400,46 +397,21 @@ export default function Conversation() {
     } catch (err) {
       setError(err.response?.data?.error || err.message || "Failed to save session");
     }
-  }, [user, selectedTableSession, payloadTranscribe]);
+  }, [user, selectedTableSession, payloadTranscribe, cleanupRecording, uploadRecordedAudio]);
 
   const endSession = useCallback(async () => {
     if (!user || !selectedTableSession || selectedTableSession.status !== "active") return;
 
     const unique_session_id = selectedTableSession.unique_session_id;
 
-    if (recorderRef.current) {
-      recorderRef.current.stopRecording();
-      recorderRef.current = null;
-    }
-    if (audioContextRef.current) {
-      await audioContextRef.current.close();
-      audioContextRef.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setIsRecording(false);
-    setConnectingAudio(false);
-    setIsPriming(false);
+    await cleanupRecording();
 
-    let audio_path = `${unique_session_id}.wav`;
-    const chunks = pcmChunksRef.current;
-    if (chunks.length > 0) {
-      try {
-        const wavBlob = buildWavBlob(chunks, RECORDING_SAMPLE_RATE);
-        const file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
-        const form = new FormData();
-        form.append("audio", file, file.name);
-        form.append("unique_session_id", unique_session_id);
-        const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
-          headers: { "Content-Type": "multipart/form-data" },
-        });
-        if (data?.audio_path) audio_path = data.audio_path;
-      } catch (err) {
-        setError(err.response?.data?.error || err.message || "Failed to upload audio");
-        return;
-      }
+    let audio_path = `${unique_session_id}.webm`;
+    try {
+      audio_path = await uploadRecordedAudio(unique_session_id);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || "Failed to upload audio");
+      return;
     }
 
     try {
@@ -458,7 +430,7 @@ export default function Conversation() {
 
     setSessions((prev) => prev.filter((s) => s.unique_session_id !== unique_session_id));
     setTranscript([]);
-  }, [user, selectedTableSession, payloadTranscribe]);
+  }, [user, selectedTableSession, payloadTranscribe, cleanupRecording, uploadRecordedAudio]);
 
   const handleSelectTable = (tableId) => {
     if (!canSwitchTable) return;
