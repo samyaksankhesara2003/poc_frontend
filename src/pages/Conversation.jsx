@@ -580,12 +580,16 @@ export default function Conversation() {
           <div style={suggestionsGrid}>
             {suggestions.map((item, i) => (
               <div key={item.id || i} style={suggestionCard}>
-                <div style={suggestionDish}>{item.dish}</div>
-                {/* <div>{item.description}</div> */}
-                <div style={suggestionMeta}>
-                  <span style={suggestionCategory}>{item.category}</span>
-                  {item.price && <span style={suggestionPrice}>₹{item.price}</span>}
+                <div style={suggestionCardHeader}>
+                  <div style={suggestionDish}>{item.dish}</div>
+                  <div style={suggestionMeta}>
+                    <span style={suggestionCategory}>{item.category}</span>
+                    {item.price && <span style={suggestionPrice}>₹{item.price}</span>}
+                  </div>
                 </div>
+                {item.description && (
+                  <div style={suggestionDesc}>{item.description}</div>
+                )}
               </div>
             ))}
           </div>
@@ -718,7 +722,7 @@ const suggestionsTitle = {
 };
 const suggestionsGrid = {
   display: "flex",
-  flexWrap: "wrap",
+  flexDirection: "column",
   gap: 10,
   maxHeight: 300,
   overflowY: "auto",
@@ -728,14 +732,17 @@ const suggestionCard = {
   border: "1px solid #e0e0e0",
   borderRadius: 8,
   padding: "10px 14px",
-  minWidth: 160,
-  flex: "1 1 160px",
-  maxWidth: 220,
+  width: "100%",
+};
+const suggestionCardHeader = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  marginBottom: 4,
 };
 const suggestionDish = {
   fontWeight: 600,
   fontSize: 14,
-  marginBottom: 6,
   color: "#222",
 };
 const suggestionMeta = {
@@ -755,4 +762,10 @@ const suggestionPrice = {
   fontSize: 13,
   fontWeight: 600,
   color: "#2e7d32",
+};
+const suggestionDesc = {
+  fontSize: 12,
+  color: "#666",
+  lineHeight: 1.4,
+  marginTop: 4,
 };
