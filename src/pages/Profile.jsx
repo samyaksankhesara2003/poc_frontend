@@ -1,25 +1,106 @@
 import axios from "axios";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { PCMRecorder } from "@speechmatics/browser-audio-input";
+import workletUrl from "@speechmatics/browser-audio-input/pcm-audio-worklet.min.js?url";
 import { STORAGE_KEY } from "./Login.jsx";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
+const WORKLET_URL = workletUrl;
+const RECORDING_SAMPLE_RATE = 16000;
 
-/**
- * Determine the best supported MIME type for MediaRecorder.
- * Returns { mimeType, ext } or falls back to browser default.
- */
-function getPreferredMime() {
-  const candidates = [
-    { mimeType: "audio/webm;codecs=opus", ext: ".webm" },
-    { mimeType: "audio/webm", ext: ".webm" },
-    { mimeType: "audio/ogg;codecs=opus", ext: ".ogg" },
-    { mimeType: "audio/mp4", ext: ".mp4" },
-  ];
-  for (const c of candidates) {
-    if (MediaRecorder.isTypeSupported(c.mimeType)) return c;
+function convertFloatTo16BitPCM(input) {
+  const buffer = new ArrayBuffer(input.length * 2);
+  const view = new DataView(buffer);
+  let offset = 0;
+  for (let i = 0; i < input.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
-  return { mimeType: "", ext: ".webm" }; // let browser decide
+  return buffer;
+}
+
+/** Build a raw 16-bit PCM blob from chunks (mono, 16kHz) for upload and priming. */
+function buildRawPcmBlob(pcmChunks) {
+  const totalLength = pcmChunks.reduce((acc, buf) => acc + buf.byteLength, 0);
+  const buffer = new ArrayBuffer(totalLength);
+  const view = new Uint8Array(buffer);
+  let offset = 0;
+  for (const chunk of pcmChunks) {
+    view.set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  return new Blob([buffer], { type: "application/octet-stream" });
+}
+
+/** Play raw 16-bit LE PCM (mono, 16kHz) from a URL via Web Audio API. */
+function PcmAudioPlayer({ url }) {
+  const [playing, setPlaying] = useState(false);
+  const [error, setError] = useState(null);
+  const sourceRef = useRef(null);
+
+  const play = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("Failed to load audio");
+      const arrayBuffer = await res.arrayBuffer();
+      const pcm = new Int16Array(arrayBuffer);
+      const ctx = new AudioContext({ sampleRate: RECORDING_SAMPLE_RATE });
+      const numSamples = pcm.length;
+      const audioBuffer = ctx.createBuffer(1, numSamples, RECORDING_SAMPLE_RATE);
+      const channel = audioBuffer.getChannelData(0);
+      for (let i = 0; i < numSamples; i++) {
+        channel[i] = pcm[i] / (pcm[i] < 0 ? 0x8000 : 0x7fff);
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      sourceRef.current = { source, ctx };
+      setPlaying(true);
+      source.onended = () => {
+        setPlaying(false);
+        ctx.close();
+      };
+    } catch (err) {
+      setError(err?.message || "Playback failed");
+      setPlaying(false);
+    }
+  }, [url]);
+
+  const stop = useCallback(() => {
+    if (sourceRef.current) {
+      try {
+        sourceRef.current.source.stop();
+        sourceRef.current.ctx.close();
+      } catch (_) { }
+      sourceRef.current = null;
+      setPlaying(false);
+    }
+  }, []);
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <button
+        type="button"
+        onClick={playing ? stop : play}
+        style={{
+          padding: "8px 16px",
+          borderRadius: 8,
+          border: "1px solid #e2e8f0",
+          background: playing ? "#fef2f2" : "#f0fdf4",
+          color: playing ? "#991b1b" : "#166534",
+          fontWeight: 600,
+          fontSize: 13,
+          cursor: "pointer",
+        }}
+      >
+        {playing ? "⏹ Stop" : "▶ Play"}
+      </button>
+      {error && <span style={{ marginLeft: 8, color: "#991b1b", fontSize: 12 }}>{error}</span>}
+    </div>
+  );
 }
 
 export default function Profile() {
@@ -32,10 +113,9 @@ export default function Profile() {
   const [elapsed, setElapsed] = useState(0);
 
   const recorderRef = useRef(null);
-  const streamRef = useRef(null);
-  const chunksRef = useRef([]);
+  const audioContextRef = useRef(null);
+  const pcmChunksRef = useRef([]);
   const timerRef = useRef(null);
-  const mimeInfoRef = useRef(null);
 
   useEffect(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -61,7 +141,7 @@ export default function Profile() {
       setUploadStatus({ type: null, message: "" });
       setUploading(true);
       const form = new FormData();
-      form.append("audio", file, file.name || "recording.webm");
+      form.append("audio", file, file.name || "recording.pcm");
       form.append("username", user.username);
       form.append("email", user.email);
       try {
@@ -88,26 +168,19 @@ export default function Profile() {
   const startRecording = useCallback(async () => {
     setUploadStatus({ type: null, message: "" });
     setElapsed(0);
-    chunksRef.current = [];
+    pcmChunksRef.current = [];
     setIsConnecting(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-
-      const mimeInfo = getPreferredMime();
-      mimeInfoRef.current = mimeInfo;
-
-      const options = mimeInfo.mimeType ? { mimeType: mimeInfo.mimeType } : {};
-      const recorder = new MediaRecorder(stream, options);
+      const audioContext = new AudioContext({ sampleRate: RECORDING_SAMPLE_RATE });
+      audioContextRef.current = audioContext;
+      const recorder = new PCMRecorder(WORKLET_URL);
       recorderRef.current = recorder;
 
-      recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          chunksRef.current.push(e.data);
-        }
-      };
+      recorder.addEventListener("audio", (e) => {
+        pcmChunksRef.current.push(convertFloatTo16BitPCM(e.data));
+      });
 
-      recorder.start();
+      await recorder.startRecording({ audioContext });
       setIsConnecting(false);
       setIsRecording(true);
       timerRef.current = setInterval(() => setElapsed((prev) => prev + 1), 1000);
@@ -120,32 +193,22 @@ export default function Profile() {
   const stopRecording = useCallback(async () => {
     clearInterval(timerRef.current);
     setIsRecording(false);
-
-    const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") {
-      // Wait for the final dataavailable event before assembling the blob
-      await new Promise((resolve) => {
-        recorder.onstop = resolve;
-        recorder.stop();
-      });
+    if (recorderRef.current) {
+      recorderRef.current.stopRecording();
+      recorderRef.current = null;
     }
-    recorderRef.current = null;
-
-    // Stop all mic tracks
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
+    if (audioContextRef.current) {
+      await audioContextRef.current.close();
+      audioContextRef.current = null;
     }
 
-    const chunks = chunksRef.current;
+    const chunks = pcmChunksRef.current;
     if (chunks.length === 0) {
       setUploadStatus({ type: "error", message: "No audio recorded." });
       return;
     }
-
-    const mimeInfo = mimeInfoRef.current || { ext: ".webm" };
-    const blob = new Blob(chunks, { type: chunks[0].type || "audio/webm" });
-    const file = new File([blob], `recording${mimeInfo.ext}`, { type: blob.type });
+    const pcmBlob = buildRawPcmBlob(chunks);
+    const file = new File([pcmBlob], "recording.pcm", { type: "application/octet-stream" });
     await uploadAudio(file);
   }, [uploadAudio]);
 
@@ -247,13 +310,21 @@ export default function Profile() {
               <div style={styles.infoContent}>
                 <div style={styles.infoLabel}>Audio Sample</div>
                 <div style={styles.infoValueMuted}>{user.audio_path}</div>
-                <audio
-                  controls
-                  style={{ marginTop: 8, width: "100%" }}
-                  src={`${API_BASE}/poc/audio-sample?audio_path=${encodeURIComponent(
-                    user.audio_path
-                  )}`}
-                />
+                {user.audio_path.toLowerCase().endsWith(".pcm") ? (
+                  <PcmAudioPlayer
+                    url={`${API_BASE}/poc/audio-sample?audio_path=${encodeURIComponent(
+                      user.audio_path
+                    )}`}
+                  />
+                ) : (
+                  <audio
+                    controls
+                    style={{ marginTop: 8, width: "100%" }}
+                    src={`${API_BASE}/poc/audio-sample?audio_path=${encodeURIComponent(
+                      user.audio_path
+                    )}`}
+                  />
+                )}
               </div>
             </div>
           )}
@@ -291,7 +362,7 @@ export default function Profile() {
             <div>
               <h3 style={styles.sectionTitle}>Record Audio Sample</h3>
               <p style={styles.sectionHint}>
-                Record your voice to enable voice recognition
+                Record your voice to enable Speechmatics voice recognition
               </p>
             </div>
           </div>
@@ -367,7 +438,7 @@ export default function Profile() {
         <div style={styles.infoCard}>
           <div style={styles.infoIcon}>💬</div>
           <div style={styles.infoContent}>
-            <div style={styles.infoLabel}>Hello. I am a waiter at this restaurant. I am recording my voice to help improve our service quality and better diarization.</div>
+            <div style={styles.infoLabel}>I am a waiter at this restaurant. I am recording my voice to help improve our service quality and better diarization.</div>
           </div>
         </div>
 

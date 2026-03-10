@@ -1,18 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import TranscriptWithPartial from "../components/TranscriptWithPartial.jsx";
+import { PCMRecorder } from "@speechmatics/browser-audio-input";
+import workletUrl from "@speechmatics/browser-audio-input/pcm-audio-worklet.min.js?url";
 
+const WORKLET_URL = workletUrl;
+const RECORDING_SAMPLE_RATE = 16000;
 const MIC_START_DELAY_MS = 1800;
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3000";
-
-// Which STT engine: "speechmatics" | "soniox". Backend routes by path.
-const WS_ENGINE = import.meta.env.VITE_WS_ENGINE || "soniox";
-const WS_HOST = import.meta.env.VITE_WS_HOST || "localhost:3000";
-const WS_PROTOCOL = import.meta.env.VITE_WS_PROTOCOL || "ws";
 const WS_BASE =
-  import.meta.env.VITE_WS_SESSION_URL ||
-  `${WS_PROTOCOL}://${WS_HOST}${WS_ENGINE === "soniox" ? "/session-soniox" : "/session-backend"}`;
+  import.meta.env.VITE_WS_SESSION_URL || "ws://localhost:3000/session-backend";
 const POC_USER_KEY = "poc_user";
 
 function getSessionWsUrl() {
@@ -28,7 +25,6 @@ function getSessionWsUrl() {
   }
 }
 
-// helper used to trim overlapping words between segments
 function removeOverlap(prevText, newText) {
   const prev = prevText.trim().split(" ");
   const next = newText.trim().split(" ");
@@ -42,36 +38,64 @@ function removeOverlap(prevText, newText) {
   return next.slice(overlapLength).join(" ");
 }
 
-// we no longer split sentences at render time; the raw segment text is shown as-is
-function splitSentences(text) {
-  // kept for compatibility but returns the whole text
-  if (!text || !String(text).trim()) return [];
-  return [String(text)];
+function isPunctuationOnly(s) {
+  return /^[.,!?;:'"\s]+$/.test((s || "").trim());
 }
 
-/**
- * Determine the best supported MIME type for MediaRecorder.
- */
-function getPreferredMime() {
-  const candidates = [
-    { mimeType: "audio/webm;codecs=opus", ext: ".webm" },
-    { mimeType: "audio/webm", ext: ".webm" },
-    { mimeType: "audio/ogg;codecs=opus", ext: ".ogg" },
-    { mimeType: "audio/mp4", ext: ".mp4" },
-  ];
-  for (const c of candidates) {
-    if (MediaRecorder.isTypeSupported(c.mimeType)) return c;
+function splitSentences(text) {
+  if (!text || !String(text).trim()) return [];
+  return String(text)
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function convertFloatTo16BitPCM(input) {
+  const buffer = new ArrayBuffer(input.length * 2);
+  const view = new DataView(buffer);
+  let offset = 0;
+  for (let i = 0; i < input.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
-  return { mimeType: "", ext: ".webm" };
+  return buffer;
+}
+
+function buildWavBlob(pcmChunks, sampleRate = 16000) {
+  const totalLength = pcmChunks.reduce((acc, buf) => acc + buf.byteLength, 0);
+  const dataLength = totalLength;
+  const buffer = new ArrayBuffer(44 + dataLength);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  };
+  writeStr(0, "RIFF");
+  view.setUint32(4, 36 + dataLength, true);
+  writeStr(8, "WAVE");
+  writeStr(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, "data");
+  view.setUint32(40, dataLength, true);
+  let offset = 44;
+  for (const chunk of pcmChunks) {
+    new Uint8Array(buffer).set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  return new Blob([buffer], { type: "audio/wav" });
 }
 
 export default function Conversation() {
   const navigate = useNavigate();
   const wsRef = useRef(null);
   const recorderRef = useRef(null);
-  const streamRef = useRef(null);
-  const recordedChunksRef = useRef([]);
-  const mimeInfoRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const pcmChunksRef = useRef([]);
 
   const [user, setUser] = useState(null);
   const [tables, setTables] = useState([]);
@@ -79,7 +103,6 @@ export default function Conversation() {
   const [sessions, setSessions] = useState([]);
 
   const [transcript, setTranscript] = useState([]);
-  const [partialSegment, setPartialSegment] = useState(null); // { speaker, text } – provisional (lighter)
   const [payloadTranscribe, setPayloadTranscribe] = useState([]); // Backend-ready state
 
   const [isRecording, setIsRecording] = useState(false);
@@ -138,29 +161,9 @@ export default function Conversation() {
   }
 
   const handleReceiveMessage = useCallback((data) => {
-    if (data.message === "PartialTranscript") {
-      const results = data.results;
-      if (!results?.length) return;
-      const parts = [];
-      let speaker = "S1";
-      for (const r of results) {
-        const content = r.alternatives?.[0]?.content;
-        const sp = r.alternatives?.[0]?.speaker || "S1";
-        if (content != null) {
-          parts.push(content);
-          speaker = sp;
-        }
-      }
-      if (parts.length > 0) {
-        setPartialSegment({ speaker, text: parts.join("").trim() });
-      }
-      return;
-    }
-
     if (data.message !== "AddTranscript") return;
     const results = data.results;
     if (!results?.length) return;
-    setPartialSegment(null);
 
     const segments = [];
     for (const r of results) {
@@ -169,10 +172,7 @@ export default function Conversation() {
       if (content == null) continue;
       if (segments.length > 0 && segments[segments.length - 1].speaker === speaker) {
         const last = segments[segments.length - 1];
-        const clean = removeOverlap(last.text, content);
-        if (clean) {
-          last.text += (last.text ? " " : "") + clean;
-        }
+        last.text += isPunctuationOnly(content) ? content : (last.text ? " " : "") + content;
       } else {
         segments.push({ speaker, text: content });
       }
@@ -180,13 +180,16 @@ export default function Conversation() {
     if (segments.length === 0) return;
 
     setTranscript((prev) => {
-      const next = [...prev];
+      let next = [...prev];
       for (const seg of segments) {
         const last = next[next.length - 1];
         if (last && last.speaker === seg.speaker) {
-          const clean = removeOverlap(last.text, seg.text);
-          if (clean) {
-            last.text += (last.text ? " " : "") + clean;
+          const cleanPart = removeOverlap(last.text, seg.text);
+          if (cleanPart) {
+            next[next.length - 1] = {
+              ...last,
+              text: last.text + (isPunctuationOnly(cleanPart) ? "" : " ") + cleanPart,
+            };
           }
         } else {
           next.push({ speaker: seg.speaker, text: seg.text });
@@ -196,20 +199,23 @@ export default function Conversation() {
     });
     setPayloadTranscribe((prev) => {
       const next = [...prev];
+
       for (const seg of segments) {
         const role = resolveRole(seg.speaker);
+
         const last = next[next.length - 1];
         if (last && last.role === role) {
-          const clean = removeOverlap(last.text, seg.text);
-          if (clean) {
-            last.text += (last.text ? " " : "") + clean;
-          }
+          last.text += isPunctuationOnly(seg.text)
+            ? seg.text
+            : (last.text ? " " : "") + seg.text;
         } else {
           next.push({ role, text: seg.text });
         }
       }
+
       return next;
     });
+
   }, []);
 
   const startRecording = useCallback(async () => {
@@ -219,9 +225,8 @@ export default function Conversation() {
 
     setError(null);
     setTranscript([]);
-    setPartialSegment(null);
     setPayloadTranscribe([]);
-    recordedChunksRef.current = [];
+    pcmChunksRef.current = [];
 
     const existingStopped = sessions.find(
       (s) => s.tableId === selectedTableId && s.status === "stop"
@@ -263,32 +268,18 @@ export default function Conversation() {
           setConnectingAudio(false);
           if (wsRef.current?.readyState !== WebSocket.OPEN) return;
 
-          const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          streamRef.current = micStream;
-
-          const mimeInfo = getPreferredMime();
-          mimeInfoRef.current = mimeInfo;
-
-          const options = mimeInfo.mimeType ? { mimeType: mimeInfo.mimeType } : {};
-          const recorder = new MediaRecorder(micStream, options);
+          const audioContext = new AudioContext({ sampleRate: RECORDING_SAMPLE_RATE });
+          audioContextRef.current = audioContext;
+          const recorder = new PCMRecorder(WORKLET_URL);
           recorderRef.current = recorder;
 
-          recorder.ondataavailable = (e) => {
-            if (e.data && e.data.size > 0) {
-              recordedChunksRef.current.push(e.data);
-              // Stream chunk to WebSocket as binary
-              if (wsRef.current?.readyState === WebSocket.OPEN) {
-                e.data.arrayBuffer().then((buf) => {
-                  if (wsRef.current?.readyState === WebSocket.OPEN) {
-                    wsRef.current.send(buf);
-                  }
-                });
-              }
-            }
-          };
+          recorder.addEventListener("audio", (e) => {
+            const pcm = convertFloatTo16BitPCM(e.data);
+            pcmChunksRef.current.push(pcm);
+            if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(pcm);
+          });
 
-          // Use timeslice to get frequent chunks for real-time streaming
-          recorder.start(250);
+          await recorder.startRecording({ audioContext });
           resolve();
         } catch (err) {
           setError(err?.message || "Failed to start recording");
@@ -303,7 +294,7 @@ export default function Conversation() {
         try {
           const data = JSON.parse(event.data);
           if (data.message === "Error") {
-            setError(data.reason || data.type || "Soniox error");
+            setError(data.reason || data.type || "Speechmatics error");
             return;
           }
           if (data.message === "PrimingStarted") setIsPriming(true);
@@ -324,19 +315,18 @@ export default function Conversation() {
     handleReceiveMessage,
   ]);
 
-  /** Stop the MediaRecorder and mic stream; close WebSocket. */
-  const cleanupRecording = useCallback(async () => {
-    if (recorderRef.current && recorderRef.current.state !== "inactive") {
-      await new Promise((resolve) => {
-        recorderRef.current.onstop = resolve;
-        recorderRef.current.stop();
-      });
-    }
-    recorderRef.current = null;
+  const stopRecording = useCallback(async () => {
+    if (!user || !selectedTableSession || selectedTableSession.status !== "active") return;
 
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
+    const unique_session_id = selectedTableSession.unique_session_id;
+
+    if (recorderRef.current) {
+      recorderRef.current.stopRecording();
+      recorderRef.current = null;
+    }
+    if (audioContextRef.current) {
+      await audioContextRef.current.close();
+      audioContextRef.current = null;
     }
     if (wsRef.current) {
       wsRef.current.close();
@@ -345,31 +335,6 @@ export default function Conversation() {
     setIsRecording(false);
     setConnectingAudio(false);
     setIsPriming(false);
-  }, []);
-
-  /** Upload recorded chunks as a single audio file to the backend. */
-  const uploadRecordedAudio = useCallback(async (unique_session_id) => {
-    const chunks = recordedChunksRef.current;
-    if (chunks.length === 0) return `${unique_session_id}.webm`;
-
-    const mimeInfo = mimeInfoRef.current || { ext: ".webm" };
-    const blob = new Blob(chunks, { type: chunks[0].type || "audio/webm" });
-    const file = new File([blob], `recording${mimeInfo.ext}`, { type: blob.type });
-    const form = new FormData();
-    form.append("audio", file, file.name);
-    form.append("unique_session_id", unique_session_id);
-    const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    });
-    return data?.audio_path || `${unique_session_id}${mimeInfo.ext}`;
-  }, []);
-
-  const stopRecording = useCallback(async () => {
-    if (!user || !selectedTableSession || selectedTableSession.status !== "active") return;
-
-    const unique_session_id = selectedTableSession.unique_session_id;
-
-    await cleanupRecording();
 
     setSessions((prev) =>
       prev.map((s) =>
@@ -377,12 +342,23 @@ export default function Conversation() {
       )
     );
 
-    let audio_path = `${unique_session_id}.webm`;
-    try {
-      audio_path = await uploadRecordedAudio(unique_session_id);
-    } catch (err) {
-      setError(err.response?.data?.error || err.message || "Failed to upload audio");
-      return;
+    let audio_path = `${unique_session_id}.wav`;
+    const chunks = pcmChunksRef.current;
+    if (chunks.length > 0) {
+      try {
+        const wavBlob = buildWavBlob(chunks, RECORDING_SAMPLE_RATE);
+        const file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
+        const form = new FormData();
+        form.append("audio", file, file.name);
+        form.append("unique_session_id", unique_session_id);
+        const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        if (data?.audio_path) audio_path = data.audio_path;
+      } catch (err) {
+        setError(err.response?.data?.error || err.message || "Failed to upload audio");
+        return;
+      }
     }
 
     try {
@@ -397,21 +373,46 @@ export default function Conversation() {
     } catch (err) {
       setError(err.response?.data?.error || err.message || "Failed to save session");
     }
-  }, [user, selectedTableSession, payloadTranscribe, cleanupRecording, uploadRecordedAudio]);
+  }, [user, selectedTableSession, payloadTranscribe]);
 
   const endSession = useCallback(async () => {
     if (!user || !selectedTableSession || selectedTableSession.status !== "active") return;
 
     const unique_session_id = selectedTableSession.unique_session_id;
 
-    await cleanupRecording();
+    if (recorderRef.current) {
+      recorderRef.current.stopRecording();
+      recorderRef.current = null;
+    }
+    if (audioContextRef.current) {
+      await audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setIsRecording(false);
+    setConnectingAudio(false);
+    setIsPriming(false);
 
-    let audio_path = `${unique_session_id}.webm`;
-    try {
-      audio_path = await uploadRecordedAudio(unique_session_id);
-    } catch (err) {
-      setError(err.response?.data?.error || err.message || "Failed to upload audio");
-      return;
+    let audio_path = `${unique_session_id}.wav`;
+    const chunks = pcmChunksRef.current;
+    if (chunks.length > 0) {
+      try {
+        const wavBlob = buildWavBlob(chunks, RECORDING_SAMPLE_RATE);
+        const file = new File([wavBlob], "recording.wav", { type: "audio/wav" });
+        const form = new FormData();
+        form.append("audio", file, file.name);
+        form.append("unique_session_id", unique_session_id);
+        const { data } = await axios.post(`${API_BASE}/poc/upload-conversation`, form, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        if (data?.audio_path) audio_path = data.audio_path;
+      } catch (err) {
+        setError(err.response?.data?.error || err.message || "Failed to upload audio");
+        return;
+      }
     }
 
     try {
@@ -430,7 +431,7 @@ export default function Conversation() {
 
     setSessions((prev) => prev.filter((s) => s.unique_session_id !== unique_session_id));
     setTranscript([]);
-  }, [user, selectedTableSession, payloadTranscribe, cleanupRecording, uploadRecordedAudio]);
+  }, [user, selectedTableSession, payloadTranscribe]);
 
   const handleSelectTable = (tableId) => {
     if (!canSwitchTable) return;
@@ -527,24 +528,41 @@ export default function Conversation() {
           <span>Speaker</span>
           <span>Conversation</span>
         </div>
-        <TranscriptWithPartial
-          transcript={displayTranscript}
-          partial={partialSegment}
-          hint={
-            selectedTableSession?.status === "active"
-              ? connectingAudio
+        <div style={transcriptBox}>
+          <div style={transcriptHint}>
+            {selectedTableSession?.status === "active" &&
+              (connectingAudio
                 ? "Connecting…"
                 : isPriming
                   ? "🎙 Identifying waiter voice…"
-                  : "Recording…"
-              : selectedTableSession?.status === "stop"
-                ? "Session paused. Start recording to continue."
-                : !selectedTableSession && selectedTableId
-                  ? "Select a table and start recording."
-                  : null
-          }
-          emptyMessage="No conversation yet."
-        />
+                  : "Recording…")}
+            {selectedTableSession?.status === "stop" && "Session paused. Start recording to continue."}
+            {!selectedTableSession && selectedTableId && "Select a table and start recording."}
+          </div>
+          {displayTranscript.length === 0 ? (
+            <div style={emptyTranscript}>No conversation yet.</div>
+          ) : (
+            displayTranscript.flatMap((t, i) => {
+              const sentences = splitSentences(t.text);
+              const speakerNum = t.speaker === "S1" ? "WAITER" : "CUSTOMER";
+              const isSpeaker1 = t.speaker === "S1";
+              if (sentences.length === 0) {
+                return (
+                  <div key={`${i}-0`} style={transcriptLine}>
+                    <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
+                    <span style={transcriptLineText}>{t.text || "\u00a0"}</span>
+                  </div>
+                );
+              }
+              return sentences.map((sent, j) => (
+                <div key={`${i}-${j}`} style={transcriptLine}>
+                  <span style={speakerPill(isSpeaker1)}>{speakerNum}</span>
+                  <span style={transcriptLineText}>{sent}</span>
+                </div>
+              ));
+            })
+          )}
+        </div>
       </div>
     </div>
   );
