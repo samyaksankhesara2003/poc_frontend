@@ -110,6 +110,7 @@ export default function Conversation() {
   const [isPriming, setIsPriming] = useState(false);
   const [error, setError] = useState(null);
   const [loadingTables, setLoadingTables] = useState(true);
+  const [suggestions, setSuggestions] = useState([]);
 
   const activeSession = sessions.find((s) => s.status === "active");
   const selectedTableSession = selectedTableId
@@ -226,6 +227,7 @@ export default function Conversation() {
     setError(null);
     setTranscript([]);
     setPayloadTranscribe([]);
+    setSuggestions([]);
     pcmChunksRef.current = [];
 
     const existingStopped = sessions.find(
@@ -299,6 +301,9 @@ export default function Conversation() {
           }
           if (data.message === "PrimingStarted") setIsPriming(true);
           if (data.message === "PrimingComplete") setIsPriming(false);
+          if (data.message === "MenuSuggestions" && data.results?.length > 0) {
+            setSuggestions((prev) => [...prev, ...data.results]);
+          }
           handleReceiveMessage(data);
         } catch (_) { }
       };
@@ -335,6 +340,7 @@ export default function Conversation() {
     setIsRecording(false);
     setConnectingAudio(false);
     setIsPriming(false);
+    setSuggestions([]);
 
     setSessions((prev) =>
       prev.map((s) =>
@@ -395,6 +401,7 @@ export default function Conversation() {
     setIsRecording(false);
     setConnectingAudio(false);
     setIsPriming(false);
+    setSuggestions([]);
 
     let audio_path = `${unique_session_id}.wav`;
     const chunks = pcmChunksRef.current;
@@ -436,6 +443,7 @@ export default function Conversation() {
   const handleSelectTable = (tableId) => {
     if (!canSwitchTable) return;
     setSelectedTableId(tableId);
+    setSuggestions([]);
     setError(null);
   };
 
@@ -564,6 +572,25 @@ export default function Conversation() {
           )}
         </div>
       </div>
+
+      {/* ─── Suggestion Box ─── */}
+      {suggestions.length > 0 && (
+        <div style={suggestionsSection}>
+          <div style={suggestionsTitle}>🍽️ Menu Suggestions</div>
+          <div style={suggestionsGrid}>
+            {suggestions.map((item, i) => (
+              <div key={item.id || i} style={suggestionCard}>
+                <div style={suggestionDish}>{item.dish}</div>
+                {/* <div>{item.description}</div> */}
+                <div style={suggestionMeta}>
+                  <span style={suggestionCategory}>{item.category}</span>
+                  {item.price && <span style={suggestionPrice}>₹{item.price}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -674,3 +701,58 @@ function speakerPill(isSpeaker1) {
   };
 }
 const transcriptLineText = { flex: 1, minWidth: 0, fontSize: 16, lineHeight: 1.5 };
+
+// ─── Suggestion box styles ───
+const suggestionsSection = {
+  marginTop: 20,
+  border: "1px solid #e0e0e0",
+  borderRadius: 10,
+  padding: 16,
+  background: "#fffde7",
+};
+const suggestionsTitle = {
+  fontWeight: 700,
+  fontSize: 16,
+  marginBottom: 12,
+  color: "#333",
+};
+const suggestionsGrid = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 10,
+  maxHeight: 300,
+  overflowY: "auto",
+};
+const suggestionCard = {
+  background: "#fff",
+  border: "1px solid #e0e0e0",
+  borderRadius: 8,
+  padding: "10px 14px",
+  minWidth: 160,
+  flex: "1 1 160px",
+  maxWidth: 220,
+};
+const suggestionDish = {
+  fontWeight: 600,
+  fontSize: 14,
+  marginBottom: 6,
+  color: "#222",
+};
+const suggestionMeta = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: 8,
+};
+const suggestionCategory = {
+  fontSize: 12,
+  color: "#777",
+  background: "#f0f0f0",
+  padding: "2px 8px",
+  borderRadius: 10,
+};
+const suggestionPrice = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: "#2e7d32",
+};
